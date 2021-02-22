@@ -4,14 +4,15 @@ from shutil import move
 import os
 
 # 图片所在文件夹
-imgs_path = glob('output/*')
+path = os.path.join('output')
+imgs_path = glob(path+'/*')
 imgs_path
 
 num = 0
 for img in imgs_path:
     if num % 200 == 0:
         # 图片所在文件夹
-        to_path = os.path.join('output', str(num))
+        to_path = os.path.join(path, str(num))
         if not os.path.exists(to_path):
             os.makedirs(to_path)
     move(img, to_path)
