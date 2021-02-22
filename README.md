@@ -6,9 +6,6 @@
 
 - 将一个文件夹下的所有文件复制到另一个文件夹中
 
+[random_copy-move.py](File://random_copy-move.py)
 
-
-
-
-
-
+- 随机从一个文件夹中选取n个文件复制/剪切到另一个文件夹中
