@@ -39,6 +39,6 @@ else:
     if type_ == 'c' or type == 'copy':
         for file in selected:
             copy(file, output_path)
-    else:
+    elif type_ == 'm' or type == 'move':
         for file in selected:
             move(file, output_path)
