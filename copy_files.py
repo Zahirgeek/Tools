@@ -1,4 +1,4 @@
-# 将T16CameraCaptures文件夹下的所有图片复制到img文件夹中
+# 将一个文件夹下的二级目录所有文件复制到另一个文件夹中
 import os
 from shutil import copy
 
