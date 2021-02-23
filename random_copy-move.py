@@ -36,9 +36,9 @@ else:
         sys.exit(1)
     if not os.path.exists(output_path):
         os.makedirs(output_path)
-    if type_ == 'c' or type == 'copy':
+    if type_ == 'c' or type_ == 'copy':
         for file in selected:
             copy(file, output_path)
-    elif type_ == 'm' or type == 'move':
+    elif type_ == 'm' or type_ == 'move':
         for file in selected:
             move(file, output_path)
