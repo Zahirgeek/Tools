@@ -16,3 +16,7 @@
 [match_files.py](.match_files.py)
 
 - 用一个文件夹中的文件匹配另一个文件夹中的同名文件，复制或剪切到第三个目录。可以指定被匹配文件夹中文件的后缀名
+
+[ccpd2019_rename.py](./ccpd2019_rename.py)
+
+- 将CCPD2019图片的文件名重命名为车牌号
