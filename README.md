@@ -20,3 +20,7 @@
 [ccpd2019_rename.py](./ccpd2019_rename.py)
 
 - 将CCPD2019图片的文件名重命名为车牌号
+
+[ccpd2019_matting.py](./ccpd2019_matting.py)
+
+- 把ccpd2019中的车牌图片选择并抠出，保存到其他目录中
