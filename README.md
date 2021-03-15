@@ -17,10 +17,18 @@
 
 - 用一个文件夹中的文件匹配另一个文件夹中的同名文件，复制或剪切到第三个目录。可以指定被匹配文件夹中文件的后缀名
 
-[ccpd2019_rename.py](./ccpd2019_rename.py)
+### 车牌数据集处理
+
+[recursive_files.py](./车牌数据集处理recursive_files.py)
+
+- 将一个文件夹中所有子目录的文件复制/剪切到根目录，文件重名不覆盖，使用“文件名-数字”重命名文件
+
+#### ccpd2019数据集处理
+
+[ccpd2019_rename.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_rename.py)
 
 - 将CCPD2019图片的文件名重命名为车牌号
 
-[ccpd2019_matting.py](./ccpd2019_matting.py)
+[ccpd2019_matting.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_matting.py)
 
 - 把ccpd2019中的车牌图片选择并抠出，保存到其他目录中
