@@ -30,7 +30,7 @@ def mkdirs(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-if not output_path:
+if output_path:
     try:
         mkdirs(output_path)
     except Exception as e:
