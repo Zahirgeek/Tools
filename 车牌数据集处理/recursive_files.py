@@ -77,17 +77,17 @@ for root, dirs, files in os.walk(input_path, topdown=False):
             continue
         if not output_path == '':
             input_path = output_path
-        print(file_path)
+        # print(file_path)
         try:
             to_file, exists_file_np = single_file_copypath(file_path, input_path, exists_file_np)
             if args.type == 'c' or args.type == 'copy':
                 # copy(file_path, input_path)
                 copy(file_path, to_file)
-                print('正在复制{}'.format(os.path.join(root, name)))
+                #print('正在复制{}'.format(os.path.join(root, name)))
             elif args.type == 'm' or args.type == 'move':
                 # move(file_path, input_path)
                 move(file_path, to_file)
-                print('正在移动{}'.format(os.path.join(root, name)))
+                #print('正在移动{}'.format(os.path.join(root, name)))
         except Exception as e:
             print('移动/复制{}失败，错误代码:{}'.format(os.path.join(root, name), e))
             if platform.system().lower() == 'windows':
