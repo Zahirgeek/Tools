@@ -13,7 +13,7 @@
 
 - 将一个文件夹中所有子目录的文件复制/剪切到另一个文件夹
 
-[match_files.py](.match_files.py)
+[match_files.py](./match_files.py)
 
 - 用一个文件夹中的文件匹配另一个文件夹中的同名文件，复制或剪切到第三个目录。可以指定被匹配文件夹中文件的后缀名
 
@@ -21,7 +21,7 @@
 
 - 车牌数据的文件名命名方式为：<车牌名称>-<数字>.<后缀名>	(不包含<>)
 
-[recursive_files.py](./车牌数据集处理recursive_files.py)
+[recursive_files.py](./车牌数据集处理/recursive_files.py)
 
 - 将一个文件夹中所有子目录的文件复制/剪切到根目录，文件重名不覆盖，使用“文件名-数字”重命名文件
 
