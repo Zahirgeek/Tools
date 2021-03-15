@@ -9,7 +9,9 @@ parser = argparse.ArgumentParser(description="将一个文件夹中所有子目�
 parser.add_argument("input_path", type=str,
                     help="选择要处理的文件夹")
 parser.add_argument("--error_path", type=str,default="",
-                    help="选择错误输出的文件夹，默认为处理的文件夹")
+                    help="选择错误输出的文件夹，默认为input文件夹")
+parser.add_argument("--output_path", type=str,default="",
+                    help="选择输出的文件夹，默认为input文件夹")
 parser.add_argument("--type", type=str, default="c",
                     help="Copy or Move?, input c or copy for copy / m or move for move, default is copy.")
 
@@ -17,6 +19,7 @@ args = parser.parse_args()
 
 # 要遍历的文件夹
 input_path = args.input_path
+output_path = args.output_path
 # input_path = os.path.join('selected')
 if not args.error_path:
     error_path = os.path.join(input_path, 'error')
@@ -27,7 +30,16 @@ def mkdirs(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-exist_list = os.listdir(input_path)
+if not output_path:
+    try:
+        mkdirs(output_path)
+    except Exception as e:
+        print('创建输出文件夹失败，请检查地址是否输入正确')
+
+if output_path == '':
+    exist_list = os.listdir(input_path)
+else:
+    exist_list = os.listdir(output_path)
 exists_file_np = np.array(exist_list)
 
 def single_file_copypath(from_file, to_path, exists_file_np):
@@ -61,8 +73,10 @@ def single_file_copypath(from_file, to_path, exists_file_np):
 for root, dirs, files in os.walk(input_path, topdown=False):
     for name in files:
         file_path = os.path.join(root, name)
-        if root == input_path:
+        if root == input_path and output_path == '':
             continue
+        if not output_path == '':
+            input_path = output_path
         print(file_path)
         try:
             to_file, exists_file_np = single_file_copypath(file_path, input_path, exists_file_np)
