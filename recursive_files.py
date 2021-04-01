@@ -34,10 +34,10 @@ for root, dirs, files in os.walk(input_path, topdown=False):
         try:
             if args.type == 'c' or args.type == 'copy':
                 copy(file_path, input_path)
-                print('正在复制{}'.format(os.path.join(root, name)))
+                #print('正在复制{}'.format(os.path.join(root, name)))
             elif args.type == 'm' or args.type == 'move':
                 move(file_path, input_path)
-                print('正在移动{}'.format(os.path.join(root, name)))
+                #print('正在移动{}'.format(os.path.join(root, name)))
         except Exception as e:
             print('移动/复制{}失败，错误代码:{}'.format(os.path.join(root, name), e))
             if platform.system().lower() == 'windows':

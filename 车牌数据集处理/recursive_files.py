@@ -60,8 +60,9 @@ def single_file_copypath(from_file, to_path, exists_file_np):
     else:
         num = 0
         while(file in exists_file_np):
-            filename = file.split('.')[0].split('-')[0]
-
+            filename = file.split('.')[0]
+            if len(filename.split('-')) <= 2:
+                filename = filename.split('-')[0]
             shuffix = file.split('.')[-1]
             num += 1
             file = '{}-{}.{}'.format(filename, num, shuffix)
