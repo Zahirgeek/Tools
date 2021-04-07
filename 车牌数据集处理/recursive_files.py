@@ -1,5 +1,6 @@
 # 将一个文件夹中所有子目录的文件复制/剪切到根目录，文件重名不覆盖，使用“文件名-数字”重命名文件
 import os
+import shutil
 from shutil import move, copy
 import argparse
 import platform
