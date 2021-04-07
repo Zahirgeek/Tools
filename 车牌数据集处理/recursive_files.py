@@ -14,6 +14,8 @@ parser.add_argument("--output_path", type=str,default="",
                     help="选择输出的文件夹，默认为input文件夹")
 parser.add_argument("--type", type=str, default="c",
                     help="Copy or Move?, input c or copy for copy / m or move for move, default is copy.")
+parser.add_argument("--remove", "-r", action="store_false", default=True,
+                    help="是否删除空文件夹，默认删除")
 
 args = parser.parse_args()
 
@@ -71,6 +73,8 @@ def single_file_copypath(from_file, to_path, exists_file_np):
         exists_file_np = np.append(exists_file_np, file)
         return to_file, exists_file_np
 
+
+root_dirs = []
 for root, dirs, files in os.walk(input_path, topdown=False):
     for name in files:
         file_path = os.path.join(root, name)
@@ -104,3 +108,13 @@ for root, dirs, files in os.walk(input_path, topdown=False):
             except Exception:
                 pass
             continue
+    if root == input_path:
+        root_dirs = dirs
+
+if args.remove:
+    for folder in root_dirs:
+        remove_folder = os.path.join(input_path, folder)
+        try:
+            shutil.rmtree(remove_folder, ignore_errors=True)
+        except Exception as e:
+            print(e)
