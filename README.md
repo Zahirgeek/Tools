@@ -36,3 +36,9 @@
   [ccpd2019_matting.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_matting.py)
 
   - 把ccpd2019中的车牌图片选择并抠出，保存到其他目录中
+
+### PaddlePaddle数据集处理
+
+[datasets_to_txt.py](PaddlePaddle/datasets_to_txt.py)
+
+- 将数据集生成含有image label的txt文件
