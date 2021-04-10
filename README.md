@@ -42,3 +42,7 @@
 [datasets_to_txt.py](PaddlePaddle/datasets_to_txt.py)
 
 - 将数据集生成含有image label的txt文件
+
+[trans_RGB.py](PaddlePaddle/trans_RGB.py)
+
+- 把三通道RGB图片转换为单通道图片
