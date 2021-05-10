@@ -16,17 +16,17 @@ parser.add_argument("--output_files", type=str, default="",
 args = parser.parse_args()
 
 
-
 def is_dir_exists(path):
     # 判断目录是否存在，不存在则创建
     if not os.path.exists(path):
         os.makedirs(path)
-		
+
 input_dir = os.path.join(args.input_files)
 output_dir = os.path.join(args.output_files)
 is_dir_exists(output_dir)
 # files_list = os.listdir(input_dir)
 files_list = glob.glob(input_dir + '/*')
+
 
 def get_filename(path):
 # 输入一个路径获取文件名,包含后缀
@@ -36,7 +36,8 @@ def get_filename(path):
         filename = path.split('/')[-1]
         
     return filename
-	
+
+
 for file in files_list:
     filename = get_filename(file)
     filename_list = filename.split('-')

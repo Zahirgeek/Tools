@@ -36,6 +36,10 @@
   [ccpd2019_matting.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_matting.py)
 
   - 把ccpd2019中的车牌图片选择并抠出，保存到其他目录中
+  
+  [ccpd2019_image_correction.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_image_correction.py)
+  
+  - 把ccpd2019中的车牌图片选择并抠出，重命名车牌并进行矫正
 
 ### PaddlePaddle数据集处理
 
