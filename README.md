@@ -29,12 +29,14 @@
 
   #### ccpd2019数据集处理
 
+  - *需要额外安装numpy和opencv-python
+
   [ccpd2019_rename.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_rename.py)
 
   - 将CCPD2019图片的文件名重命名为车牌号
 
   [ccpd2019_matting.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_matting.py)
-
+  
   - 把ccpd2019中的车牌图片选择并抠出，保存到其他目录中
   
   [ccpd2019_image_correction.py](./车牌数据集处理/ccpd2019数据集处理/ccpd2019_image_correction.py)
