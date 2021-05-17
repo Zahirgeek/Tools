@@ -52,3 +52,9 @@
 [trans_RGB.py](PaddlePaddle/trans_RGB.py)
 
 - 把三通道RGB图片转换为单通道图片
+
+### YOLO数据集处理
+
+[voc2txt.py](YOLO/voc2txt.py)
+
+- VOC标签信息存入txt文件
