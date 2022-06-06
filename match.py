@@ -41,6 +41,7 @@ def copy_move(file_path, args):
     if args.type == 'c' or args.type == 'copy':
         copy(file_path, to_path)
     elif args.type == 'm' or args.type == 'move':
+        print('-'*10, file_path)
         move(file_path, to_path)
 
 
@@ -59,7 +60,10 @@ def match_files(args):
         for j, second_file in enumerate(second_folder_set):
             if fnmatch.fnmatch(second_file, file_name + '.*'):
                 first_file_path = os.path.join(args.first_folder, first_file)
-                copy_move(first_file_path, args)
+                try:
+                    copy_move(first_file_path, args)
+                except Exception as e:
+                    print(e)
 
         progress_bar = i/(len(first_folder_set)-1)*100
         print("\r{:.1f}%".format(progress_bar), end="")
