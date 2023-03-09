@@ -6,7 +6,7 @@ import math
 from shutil import copy
 
 def get_args():
-    parser = argparse.ArgumentParser(description="分割Yolov5数据集")
+    parser = argparse.ArgumentParser(description="分割Yolov5obb数据集")
     parser.add_argument("--train", type=float,
                         help="训练集比例")
     parser.add_argument("--val", type=float,
@@ -15,8 +15,8 @@ def get_args():
                         help="图片位置")
     parser.add_argument("--label_path", '-l', type=str,
                         help="标注文件位置")
-    parser.add_argument("--output", '-o', type=str, default="newname",
-                        help="分割后的数据输出位置，不指定则默认为该脚本同级newname目录下")
+    parser.add_argument("--output", '-o', type=str, default="ddck",
+                        help="分割后的数据输出位置，不指定则默认为该脚本同级ddck目录下")
 
     args = parser.parse_args()
     return args
@@ -72,19 +72,18 @@ def mkdir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def copy_images_labels(image_name_set, image_folder, label_folder, to_newpath):
+def copy_images_labels(image_name_set, image_folder, label_folder, to_imagepath, to_labelpath):
     '''
     将图片复制到目标文件夹下
     image_name_set: 需要复制的图片名称，set类型
     image_folder: 原图所在目录
     label_folder: 原标签所在目录
-    to_newpath: 将图片和标签复制到新的目录
     to_imagepath: 图片复制的目标文件夹
     to_labelpath: 标签复制的目标文件夹
     '''
     for i, image_name in enumerate(image_name_set):
         image_path = os.path.join(image_folder, image_name)
-        copy(image_path, to_newpath)
+        copy(image_path, to_imagepath)
         image_name = image_name.split('.')[:-1]
         if isinstance(image_name, list):
             image_name = ".".join(image_name)
@@ -92,43 +91,38 @@ def copy_images_labels(image_name_set, image_folder, label_folder, to_newpath):
 
         txt_path = os.path.join(label_folder, txt_name)
         try:
-            copy(txt_path, to_newpath)
+            copy(txt_path, to_labelpath)
         except Exception as e:
             print('复制标签失败:')
             print(e)
 
 
-newname_str = args.output
-newname_path = os.path.split(newname_str)[0]
-newname_basename = os.path.split(newname_str)[1]
-newname_count = 0
-while(os.path.exists(newname_str)):
-    newname_count += 1
-    newname_basename = newname_basename + str(newname_count)
-    newname_str = os.path.join(newname_path, newname_basename)
-
-    
+ddck_str = args.output
 # 训练集目录
-train_path = os.path.join(newname_str, 'train')
-
+train_image_path = os.path.join(ddck_str, 'train', 'images')
+train_label_path = os.path.join(ddck_str, 'train', 'labelTxt')
 # 测试集目录
-test_path = os.path.join(newname_str, 'test')
-
+test_image_path = os.path.join(ddck_str, 'test', 'images')
+test_label_path = os.path.join(ddck_str, 'test', 'labelTxt')
 # 验证集目录
-val_path = os.path.join(newname_str, 'val')
+val_image_path = os.path.join(ddck_str, 'val', 'images')
+val_label_path = os.path.join(ddck_str, 'val', 'labelTxt')
 
 
 # 把图片复制到训练集目录
 if train_name_set:
-    mkdir(train_path)
-    copy_images_labels(train_name_set, image_folder, label_folder, train_path)
+    mkdir(train_image_path)
+    mkdir(train_label_path)
+    copy_images_labels(train_name_set, image_folder, label_folder, train_image_path, train_label_path)
 
 # 把图片复制到测试集目录
 if test_name_set:
-    mkdir(test_path)
-    copy_images_labels(test_name_set, image_folder, label_folder, test_path)
+    mkdir(test_image_path)
+    mkdir(test_label_path)
+    copy_images_labels(test_name_set, image_folder, label_folder, test_image_path, test_label_path)
 
 # 把图片复制到验证集目录
 if val_name_set:
-    mkdir(val_path)
-    copy_images_labels(val_name_set, image_folder, label_folder, val_path)
+    mkdir(val_image_path)
+    mkdir(val_label_path)
+    copy_images_labels(val_name_set, image_folder, label_folder, val_image_path, val_label_path)
