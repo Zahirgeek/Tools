@@ -19,7 +19,7 @@ def path_exist(path):
     if not os.path.exists(path):
         print("{}路径不存在，正在创建".format(path))
         os.makedirs(path)
-        print("{}路径创建完成")
+        print("{}路径创建完成".format(path))
 
 def parsexmlfile(path, output_path):
     '''
