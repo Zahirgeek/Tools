@@ -20,7 +20,7 @@ def convert_single_image(input_path, output_path):
     image = Image.open(input_path)
     # 将图片转换为二值化图片
     image = image.convert('L')
-    threshold = 128
+    threshold = 1
     image = image.point(lambda p: p > threshold and 255)
     # 创建输出文件夹（如果不存在）
     os.makedirs(output_path, exist_ok=True)
