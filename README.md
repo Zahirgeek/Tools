@@ -6,6 +6,8 @@
 
 ~~~
 python xx.py -h
+# 或
+python xx.py --help
 ~~~
 
 - 使用
