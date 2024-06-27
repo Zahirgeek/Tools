@@ -33,7 +33,7 @@ def crop_image(origin_img,  x,  y,  w,  h):
 
     x,y,h,w = int(x*img_width), int(y*img_height), int(h*img_height), int(w*img_width)
     xmin = int(x - w/2)
-    xmax =int( x + w/2)
+    xmax = int(x + w/2)
     ymin = int(y - h/2)
     ymax = int(y + h/2)
     imgCrop = origin_img[ymin: ymax, xmin: xmax]

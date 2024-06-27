@@ -18,6 +18,7 @@ def convert_image(input_path, output_path):
 def convert_single_image(input_path, output_path):
     # 打开图片文件
     image = Image.open(input_path)
+
     # 将图片转换为二值化图片
     image = image.convert('L')
     threshold = 1

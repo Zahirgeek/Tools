@@ -46,8 +46,8 @@ def parsexmlfile(path, output_path):
     # 保存label名称到指定位置
     path_exist(output_path)
     with open(os.path.join(output_path, "obj.names"), "w") as f:
-        for i in labels:
-            f.write(i + '\n')
+        for i, label in enumerate(labels):
+            f.write(f"{i} {label}" + '\n')
 
     # 创建保存图片的目录
     output_image_path_list = list()
