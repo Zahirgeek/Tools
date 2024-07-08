@@ -23,7 +23,7 @@ def get_args():
 
 def coco_to_yolo(coco_file, output_dir, images_dir, is_show=False):
     # 加载COCO格式的JSON文件
-    with open(coco_file, 'r') as f:
+    with open(coco_file, 'r', encoding='UTF-8') as f:
         coco_data = json.load(f)
 
     # 创建类别ID到名称的映射
