@@ -15,6 +15,10 @@ import numpy as np
 from PIL import Image
 import logging
 from typing import List, Tuple, Dict
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+import threading
+from queue import Queue
+import time
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -43,6 +47,7 @@ class YOLODetectionClassifier:
         # 加载类别
         self.classes = self._load_classes(classes_path)
         logger.info(f"加载了 {len(self.classes)} 个类别: {self.classes}")
+        logger.info(f"置信度阈值设置为: {self.confidence_threshold}")
     
     def _load_classes(self, classes_path: str) -> List[str]:
         """加载类别文件"""
@@ -50,26 +55,38 @@ class YOLODetectionClassifier:
             classes = [line.strip() for line in f.readlines() if line.strip()]
         return classes
     
-    def detect_image(self, image_path: str) -> Tuple[List[str], np.ndarray, dict]:
+    def detect_image(self, image_path: str, processor=None) -> Tuple[List[str], np.ndarray, dict, float]:
         """
         检测单张图像
         
         Args:
             image_path: 图像路径
+            processor: 文件处理器（用于记录推理时间）
             
         Returns:
             detected_classes: 检测到的类别列表
             image: 原图像
             results_info: 检测结果信息
+            inference_time: 推理时间（秒）
         """
         # 读取图像
         image = cv2.imread(image_path)
         if image is None:
             logger.error(f"无法读取图像: {image_path}")
-            return [], None, {}
+            return [], None, {}, 0.0
         
-        # 进行检测
+        # 记录推理阶段开始时间
+        if processor:
+            processor.record_inference_start()
+        
+        # 进行检测并计时
+        inference_start = time.time()
         results = self.model(image_path, conf=self.confidence_threshold)
+        inference_time = time.time() - inference_start
+        
+        # 记录推理阶段结束时间
+        if processor:
+            processor.record_inference_end()
         
         detected_classes = []
         results_info = {
@@ -84,7 +101,8 @@ class YOLODetectionClassifier:
                     cls_id = int(box.cls.cpu().numpy()[0])
                     confidence = float(box.conf.cpu().numpy()[0])
                     
-                    if cls_id < len(self.classes):
+                    # 确保置信度满足阈值要求
+                    if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
                         class_name = self.classes[cls_id]
                         if class_name not in detected_classes:
                             detected_classes.append(class_name)
@@ -101,21 +119,137 @@ class YOLODetectionClassifier:
                         if class_name not in results_info['class_counts']:
                             results_info['class_counts'][class_name] = 0
                         results_info['class_counts'][class_name] += 1
+                    elif cls_id < len(self.classes):
+                        # 记录被过滤掉的低置信度检测
+                        class_name = self.classes[cls_id]
+                        logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
         
-        return detected_classes, image, results_info
+        return detected_classes, image, results_info, inference_time
     
-    def detect_video_frame(self, frame: np.ndarray) -> Tuple[List[str], dict]:
+    def detect_images_batch(self, image_paths: List[str], batch_size: int = 8, processor=None) -> List[Tuple[str, List[str], np.ndarray, dict, float]]:
+        """
+        批量检测多张图像
+        
+        Args:
+            image_paths: 图像路径列表
+            batch_size: 批处理大小
+            processor: 文件处理器（用于记录推理时间）
+            
+        Returns:
+            results: 检测结果列表，每个元素为(image_path, detected_classes, image, results_info, inference_time)
+        """
+        all_results = []
+        
+        # 分批处理
+        for i in range(0, len(image_paths), batch_size):
+            batch_paths = image_paths[i:i + batch_size]
+            
+            # 读取批量图像
+            batch_images = []
+            valid_paths = []
+            
+            for path in batch_paths:
+                image = cv2.imread(path)
+                if image is not None:
+                    batch_images.append(image)
+                    valid_paths.append(path)
+                else:
+                    logger.error(f"无法读取图像: {path}")
+                    all_results.append((path, [], None, {}, 0.0))
+            
+            if not batch_images:
+                continue
+            
+            # 记录推理阶段开始时间
+            if processor:
+                processor.record_inference_start()
+            
+            # 批量推理
+            try:
+                batch_inference_start = time.time()
+                results = self.model(batch_images, conf=self.confidence_threshold)
+                batch_inference_time = time.time() - batch_inference_start
+                avg_inference_time = batch_inference_time / len(batch_images)
+                
+                # 记录推理阶段结束时间
+                if processor:
+                    processor.record_inference_end()
+                
+                # 处理每个结果
+                for j, (path, image, result) in enumerate(zip(valid_paths, batch_images, results)):
+                    detected_classes = []
+                    results_info = {
+                        'detections': [],
+                        'class_counts': {}
+                    }
+                    
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        for box in result.boxes:
+                            cls_id = int(box.cls.cpu().numpy()[0])
+                            confidence = float(box.conf.cpu().numpy()[0])
+                            
+                            # 确保置信度满足阈值要求
+                            if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
+                                class_name = self.classes[cls_id]
+                                if class_name not in detected_classes:
+                                    detected_classes.append(class_name)
+                                
+                                # 记录检测信息
+                                bbox = box.xyxy.cpu().numpy()[0].tolist()
+                                results_info['detections'].append({
+                                    'class': class_name,
+                                    'confidence': confidence,
+                                    'bbox': bbox
+                                })
+                                
+                                # 统计类别数量
+                                if class_name not in results_info['class_counts']:
+                                    results_info['class_counts'][class_name] = 0
+                                results_info['class_counts'][class_name] += 1
+                            elif cls_id < len(self.classes):
+                                # 记录被过滤掉的低置信度检测
+                                class_name = self.classes[cls_id]
+                                logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                    
+                    all_results.append((path, detected_classes, image, results_info, avg_inference_time))
+                    
+            except Exception as e:
+                logger.error(f"批量推理失败: {e}")
+                # 失败时回退到单张处理
+                for path in valid_paths:
+                    try:
+                        detected_classes, image, results_info, inference_time = self.detect_image(path, processor)
+                        all_results.append((path, detected_classes, image, results_info, inference_time))
+                    except Exception as e2:
+                        logger.error(f"单张图像处理失败 {path}: {e2}")
+                        all_results.append((path, [], None, {}, 0.0))
+        
+        return all_results
+    
+    def detect_video_frame(self, frame: np.ndarray, processor=None) -> Tuple[List[str], dict, float]:
         """
         检测视频帧
         
         Args:
             frame: 视频帧
+            processor: 文件处理器（用于记录推理时间）
             
         Returns:
             detected_classes: 检测到的类别列表
             results_info: 检测结果信息
+            inference_time: 推理时间（秒）
         """
+        # 记录推理阶段开始时间
+        if processor:
+            processor.record_inference_start()
+        
+        inference_start = time.time()
         results = self.model(frame, conf=self.confidence_threshold)
+        inference_time = time.time() - inference_start
+        
+        # 记录推理阶段结束时间
+        if processor:
+            processor.record_inference_end()
         
         detected_classes = []
         results_info = {
@@ -130,7 +264,8 @@ class YOLODetectionClassifier:
                     cls_id = int(box.cls.cpu().numpy()[0])
                     confidence = float(box.conf.cpu().numpy()[0])
                     
-                    if cls_id < len(self.classes):
+                    # 确保置信度满足阈值要求
+                    if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
                         class_name = self.classes[cls_id]
                         if class_name not in detected_classes:
                             detected_classes.append(class_name)
@@ -145,8 +280,12 @@ class YOLODetectionClassifier:
                         if class_name not in results_info['class_counts']:
                             results_info['class_counts'][class_name] = 0
                         results_info['class_counts'][class_name] += 1
+                    elif cls_id < len(self.classes):
+                        # 记录被过滤掉的低置信度检测
+                        class_name = self.classes[cls_id]
+                        logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
         
-        return detected_classes, results_info
+        return detected_classes, results_info, inference_time
     
     def visualize_detection(self, image: np.ndarray, results_info: dict) -> np.ndarray:
         """
@@ -185,7 +324,7 @@ class FileProcessor:
     """文件处理器"""
     
     def __init__(self, input_path: str, output_path: str, detector: YOLODetectionClassifier, 
-                 visualize: bool = False):
+                 visualize: bool = False, max_workers: int = 4, batch_size: int = 8):
         """
         初始化文件处理器
         
@@ -194,11 +333,15 @@ class FileProcessor:
             output_path: 输出路径
             detector: YOLO检测器
             visualize: 是否可视化
+            max_workers: 最大并行工作线程数
+            batch_size: 图像批处理大小
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
         self.detector = detector
         self.visualize = visualize
+        self.max_workers = max_workers
+        self.batch_size = batch_size
         
         # 支持的图像格式
         self.image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
@@ -208,14 +351,26 @@ class FileProcessor:
         # 创建输出目录
         self.output_path.mkdir(parents=True, exist_ok=True)
         
-        # 统计信息
+        # 统计信息和线程锁
         self.stats = {
             'total_files': 0,
             'processed_files': 0,
             'classified_files': {},
             'unknown_files': 0,
-            'error_files': 0
+            'error_files': 0,
+            'total_inference_time': 0.0,  # 累计推理时间（用于计算平均）
+            'total_inferences': 0,        # 总推理次数
         }
+        self.stats_lock = threading.Lock()
+        
+        # 进度显示
+        self.progress_count = 0
+        self.start_time = None
+        self.end_time = None
+        
+        # 推理阶段时间统计
+        self.inference_start_time = None  # 第一次推理开始时间
+        self.inference_end_time = None    # 最后一次推理结束时间
     
     def get_relative_path(self, file_path: Path) -> Path:
         """获取相对于输入路径的相对路径"""
@@ -223,6 +378,82 @@ class FileProcessor:
             return file_path.relative_to(self.input_path)
         except ValueError:
             return file_path.name
+    
+    def record_inference_start(self):
+        """记录推理阶段开始时间（线程安全）"""
+        with self.stats_lock:
+            if self.inference_start_time is None:
+                self.inference_start_time = time.time()
+    
+    def record_inference_end(self):
+        """记录推理阶段结束时间（线程安全）"""
+        with self.stats_lock:
+            self.inference_end_time = time.time()
+    
+    def update_stats_thread_safe(self, detected_classes: List[str], is_frame: bool = False, inference_time: float = 0.0):
+        """线程安全地更新统计信息"""
+        with self.stats_lock:
+            self.progress_count += 1
+            
+            # 记录推理时间和次数
+            if inference_time > 0:
+                self.stats['total_inference_time'] += inference_time
+                self.stats['total_inferences'] += 1
+            
+            if not detected_classes:
+                if is_frame:
+                    if 'frame_unknown_files' not in self.stats:
+                        self.stats['frame_unknown_files'] = 0
+                    self.stats['frame_unknown_files'] += 1
+                else:
+                    self.stats['unknown_files'] += 1
+            else:
+                # 只统计第一个检测到的类别以避免重复计数
+                category = detected_classes[0]
+                if is_frame:
+                    if 'frame_classified_files' not in self.stats:
+                        self.stats['frame_classified_files'] = {}
+                    if category not in self.stats['frame_classified_files']:
+                        self.stats['frame_classified_files'][category] = 0
+                    self.stats['frame_classified_files'][category] += 1
+                else:
+                    if category not in self.stats['classified_files']:
+                        self.stats['classified_files'][category] = 0
+                    self.stats['classified_files'][category] += 1
+    
+    def update_processed_files(self):
+        """更新已处理文件数"""
+        with self.stats_lock:
+            self.stats['processed_files'] += 1
+    
+    def update_error_files(self):
+        """更新错误文件数"""
+        with self.stats_lock:
+            self.stats['error_files'] += 1
+    
+    def show_progress(self, file_path: str = None):
+        """显示处理进度"""
+        if self.start_time is None:
+            return
+            
+        elapsed_time = time.time() - self.start_time
+        with self.stats_lock:
+            progress = self.progress_count
+            total = self.stats['total_files']
+            
+        if total > 0:
+            percentage = (progress / total) * 100
+            avg_time = elapsed_time / progress if progress > 0 else 0
+            eta = avg_time * (total - progress) if progress > 0 else 0
+            
+            if file_path:
+                logger.info(f"进度: {progress}/{total} ({percentage:.1f}%) | "
+                           f"平均: {avg_time:.2f}s/文件 | "
+                           f"预计剩余: {eta:.0f}s | "
+                           f"当前: {Path(file_path).name}")
+            else:
+                logger.info(f"进度: {progress}/{total} ({percentage:.1f}%) | "
+                           f"已用时: {elapsed_time:.0f}s")
     
     def create_output_dirs(self, detected_classes: List[str], relative_path: Path) -> List[Path]:
         """
@@ -298,21 +529,13 @@ class FileProcessor:
                 # 复制原文件
                 shutil.copy2(source_path, dest_path)
                 
-                # 更新统计信息
-                if not detected_classes:
-                    category = "unknown"
-                    self.stats['unknown_files'] += 1
-                else:
-                    category = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
-                    if category not in self.stats['classified_files']:
-                        self.stats['classified_files'][category] = 0
-                    self.stats['classified_files'][category] += 1
-                
-                logger.info(f"已保存文件到 {category} 类别: {dest_path}")
+                category = "unknown" if not detected_classes else (
+                    detected_classes[i] if i < len(detected_classes) else detected_classes[0]
+                )
                 
             except Exception as e:
                 logger.error(f"保存文件失败 {dest_path}: {e}")
-                self.stats['error_files'] += 1
+                self.update_error_files()
     
     def save_visualization(self, vis_image: np.ndarray, output_dirs: List[Path], 
                           filename: str, detected_classes: List[str]):
@@ -352,35 +575,87 @@ class FileProcessor:
                 # 保存帧图片
                 cv2.imwrite(str(frame_path), frame)
                 
-                # 更新统计信息
-                if not detected_classes:
-                    category = "unknown"
-                    if 'frame_unknown_files' not in self.stats:
-                        self.stats['frame_unknown_files'] = 0
-                    self.stats['frame_unknown_files'] += 1
-                else:
-                    category = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
-                    if 'frame_classified_files' not in self.stats:
-                        self.stats['frame_classified_files'] = {}
-                    if category not in self.stats['frame_classified_files']:
-                        self.stats['frame_classified_files'][category] = 0
-                    self.stats['frame_classified_files'][category] += 1
-                
             except Exception as e:
                 logger.error(f"保存帧失败 {frame_path}: {e}")
-                self.stats['error_files'] += 1
+                self.update_error_files()
+    
+    def process_images_batch(self, image_paths: List[Path]) -> None:
+        """
+        批量处理图像文件
+        
+        Args:
+            image_paths: 图像路径列表
+        """
+        try:
+            # 转换为字符串路径
+            str_paths = [str(path) for path in image_paths]
+            
+            # 批量检测
+            batch_results = self.detector.detect_images_batch(str_paths, self.batch_size, self)
+            
+            # 处理每个结果
+            for image_path_str, detected_classes, image, results_info, inference_time in batch_results:
+                image_path = Path(image_path_str)
+                
+                try:
+                    if image is None:
+                        logger.error(f"无法读取图像: {image_path}")
+                        self.update_error_files()
+                        continue
+                    
+                    # 获取相对路径
+                    relative_path = self.get_relative_path(image_path)
+                    
+                    # 创建输出目录
+                    output_dirs = self.create_output_dirs(detected_classes, relative_path)
+                    
+                    # 保存文件
+                    self.save_file_to_dirs(image_path, output_dirs, detected_classes)
+                    
+                    # 可视化（如果启用）
+                    if self.visualize and results_info['detections']:
+                        vis_image = self.detector.visualize_detection(image, results_info)
+                        self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
+                    
+                    # 更新统计信息
+                    self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
+                    
+                except Exception as e:
+                    logger.error(f"处理图像时发生错误 {image_path}: {e}")
+                    self.update_error_files()
+            
+            # 更新已处理文件数
+            self.update_processed_files()
+            
+        except Exception as e:
+            logger.error(f"批量处理图像时发生错误: {e}")
+            # 回退到单张处理
+            for image_path in image_paths:
+                self.process_image(image_path)
+    
+    def process_video_worker(self, video_path: Path) -> None:
+        """
+        工作线程处理单个视频文件
+        
+        Args:
+            video_path: 视频文件路径
+        """
+        try:
+            self.process_video(video_path)
+            self.update_processed_files()
+        except Exception as e:
+            logger.error(f"处理视频时发生错误 {video_path}: {e}")
+            self.update_error_files()
     
     def process_image(self, image_path: Path):
-        """处理单张图像"""
-        logger.info(f"正在处理图像: {image_path}")
-        
+        """处理单张图像（用于回退处理）"""
         try:
             # 检测图像
-            detected_classes, image, results_info = self.detector.detect_image(str(image_path))
+            detected_classes, image, results_info, inference_time = self.detector.detect_image(str(image_path), self)
             
             if image is None:
                 logger.error(f"无法读取图像: {image_path}")
-                self.stats['error_files'] += 1
+                self.update_error_files()
                 return
             
             # 获取相对路径
@@ -397,11 +672,12 @@ class FileProcessor:
                 vis_image = self.detector.visualize_detection(image, results_info)
                 self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
             
-            self.stats['processed_files'] += 1
+            # 更新统计信息
+            self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
             
         except Exception as e:
             logger.error(f"处理图像时发生错误 {image_path}: {e}")
-            self.stats['error_files'] += 1
+            self.update_error_files()
     
     def process_video(self, video_path: Path):
         """处理视频文件 - 逐帧推理并输出图片"""
@@ -411,7 +687,7 @@ class FileProcessor:
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
                 logger.error(f"无法打开视频: {video_path}")
-                self.stats['error_files'] += 1
+                self.update_error_files()
                 return
             
             # 获取视频信息
@@ -434,7 +710,7 @@ class FileProcessor:
                     break
                 
                 # 检测当前帧
-                detected_classes, results_info = self.detector.detect_video_frame(frame)
+                detected_classes, results_info, inference_time = self.detector.detect_video_frame(frame, self)
                 
                 # 创建帧文件名（6位数字，左侧补零）
                 frame_filename = f"frame_{frame_idx:06d}.jpg"
@@ -444,6 +720,9 @@ class FileProcessor:
                 
                 # 保存当前帧
                 self.save_frame_to_dirs(frame, output_dirs, frame_filename, detected_classes)
+                
+                # 更新帧统计信息
+                self.update_stats_thread_safe(detected_classes, is_frame=True, inference_time=inference_time)
                 
                 # 可视化（如果启用）
                 if self.visualize and results_info['detections']:
@@ -467,19 +746,18 @@ class FileProcessor:
                 # 每处理100帧输出一次进度
                 if frame_idx % 100 == 0:
                     progress = (frame_idx / total_frames) * 100
-                    logger.info(f"处理进度: {frame_idx}/{total_frames} ({progress:.1f}%)")
+                    logger.info(f"视频 {video_path.name} 进度: {frame_idx}/{total_frames} ({progress:.1f}%)")
             
             cap.release()
             
-            logger.info(f"视频处理完成，共处理 {processed_frames} 帧")
-            self.stats['processed_files'] += 1
+            logger.info(f"视频处理完成: {video_path.name}，共处理 {processed_frames} 帧")
             
         except Exception as e:
             logger.error(f"处理视频时发生错误 {video_path}: {e}")
-            self.stats['error_files'] += 1
+            self.update_error_files()
     
     def process_all_files(self):
-        """处理所有文件"""
+        """智能处理所有文件 - 根据文件类型和数量优化策略"""
         logger.info(f"开始处理目录: {self.input_path}")
         
         # 收集所有要处理的文件
@@ -494,20 +772,150 @@ class FileProcessor:
                     if ext in self.image_extensions or ext in self.video_extensions:
                         all_files.append(file_path)
         
-        self.stats['total_files'] = len(all_files)
-        logger.info(f"找到 {len(all_files)} 个文件需要处理")
+        # 分离图像和视频文件
+        image_files = []
+        video_files = []
         
-        # 处理每个文件
         for file_path in all_files:
             ext = file_path.suffix.lower()
-            
             if ext in self.image_extensions:
-                self.process_image(file_path)
+                image_files.append(file_path)
             elif ext in self.video_extensions:
-                self.process_video(file_path)
+                video_files.append(file_path)
+        
+        self.stats['total_files'] = len(all_files)
+        logger.info(f"找到 {len(all_files)} 个文件需要处理:")
+        logger.info(f"  图像文件: {len(image_files)} 个")
+        logger.info(f"  视频文件: {len(video_files)} 个")
+        
+        # 🚀 智能策略选择
+        optimal_strategy = self._choose_optimal_strategy(image_files, video_files)
+        logger.info(f"  采用策略: {optimal_strategy['name']}")
+        logger.info(f"  并行度: {optimal_strategy['workers']} 线程")
+        logger.info(f"  批处理大小: {optimal_strategy['batch_size']}")
+        
+        if not all_files:
+            logger.warning("未找到要处理的文件")
+            return
+        
+        self.start_time = time.time()
+        
+        # 根据选择的策略执行处理
+        if optimal_strategy['strategy'] == 'batch_only':
+            self._process_batch_only(image_files, video_files, optimal_strategy)
+        else:
+            self._process_with_threads(image_files, video_files, optimal_strategy)
+        
+        # 显示最终进度
+        self.show_progress()
+        
+        # 设置结束时间
+        self.end_time = time.time()
         
         # 输出统计信息
         self.print_stats()
+    
+    def _choose_optimal_strategy(self, image_files, video_files):
+        """根据文件数量和类型选择最优处理策略"""
+        total_images = len(image_files)
+        total_videos = len(video_files)
+        
+        # 策略1: 纯批量处理（适合大量图像，少量或无视频）
+        if total_images >= 100 and total_videos <= 2:
+            return {
+                'strategy': 'batch_only',
+                'name': '批量优化模式（推荐）',
+                'workers': 1,  # 使用单线程避免GPU竞争
+                'batch_size': min(32, max(8, total_images // 10))  # 动态批大小
+            }
+        
+        # 策略2: 小规模处理（文件数量少）
+        elif total_images + total_videos <= 50:
+            return {
+                'strategy': 'single_thread',
+                'name': '单线程模式（小规模）',
+                'workers': 1,
+                'batch_size': min(8, total_images)
+            }
+        
+        # 策略3: 混合并行处理（图像和视频都较多）
+        else:
+            # 动态调整线程数，避免过度并行
+            optimal_workers = min(self.max_workers, 
+                                max(1, min(4, total_videos + (total_images // 50))))
+            return {
+                'strategy': 'hybrid_parallel',
+                'name': '混合并行模式',
+                'workers': optimal_workers,
+                'batch_size': min(16, max(4, total_images // optimal_workers))
+            }
+    
+    def _process_batch_only(self, image_files, video_files, strategy):
+        """批量优化处理模式"""
+        logger.info("🚀 使用批量优化模式处理")
+        
+        # 处理图像文件 - 使用大批量
+        if image_files:
+            batch_size = strategy['batch_size']
+            total_batches = (len(image_files) + batch_size - 1) // batch_size
+            
+            for i in range(0, len(image_files), batch_size):
+                batch = image_files[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                logger.info(f"处理图像批次 {batch_num}/{total_batches}: {len(batch)} 个文件")
+                
+                self.process_images_batch(batch)
+                
+                # 显示批次进度
+                if batch_num % 5 == 0 or batch_num == total_batches:
+                    progress = (batch_num / total_batches) * 100
+                    logger.info(f"图像处理进度: {progress:.1f}%")
+        
+        # 处理视频文件 - 串行处理避免竞争
+        for i, video_file in enumerate(video_files):
+            logger.info(f"处理视频 {i+1}/{len(video_files)}: {video_file.name}")
+            self.process_video_worker(video_file)
+    
+    def _process_with_threads(self, image_files, video_files, strategy):
+        """多线程处理模式"""
+        logger.info(f"🔄 使用多线程模式处理 ({strategy['workers']} 线程)")
+        
+        # 创建线程池处理
+        with ThreadPoolExecutor(max_workers=strategy['workers']) as executor:
+            futures = []
+            
+            # 提交图像批处理任务
+            if image_files:
+                batch_size = strategy['batch_size']
+                # 将图像文件分批
+                for i in range(0, len(image_files), batch_size):
+                    batch = image_files[i:i + batch_size]
+                    future = executor.submit(self.process_images_batch, batch)
+                    futures.append(future)
+                    logger.info(f"提交图像批处理任务: {len(batch)} 个文件")
+            
+            # 提交视频处理任务
+            for video_file in video_files:
+                future = executor.submit(self.process_video_worker, video_file)
+                futures.append(future)
+                logger.info(f"提交视频处理任务: {video_file.name}")
+            
+            # 等待所有任务完成并显示进度
+            completed_tasks = 0
+            total_tasks = len(futures)
+            
+            for future in as_completed(futures):
+                try:
+                    future.result()  # 获取结果以捕获异常
+                    completed_tasks += 1
+                    
+                    # 显示任务完成进度
+                    task_progress = (completed_tasks / total_tasks) * 100
+                    logger.info(f"任务进度: {completed_tasks}/{total_tasks} ({task_progress:.1f}%)")
+                    
+                except Exception as e:
+                    logger.error(f"任务执行失败: {e}")
+                    completed_tasks += 1
     
     def print_stats(self):
         """打印统计信息"""
@@ -533,11 +941,51 @@ class FileProcessor:
                 for category, count in self.stats['frame_classified_files'].items():
                     logger.info(f"  {category}: {count}")
         
+        # 输出总处理时间和推理时间
+        if self.start_time and self.end_time:
+            total_processing_time = self.end_time - self.start_time
+            logger.info(f"\n总处理时间: {total_processing_time:.2f} 秒")
+            
+            # 推理阶段总时长（真实的推理时间段）
+            if self.inference_start_time and self.inference_end_time:
+                inference_phase_duration = self.inference_end_time - self.inference_start_time
+                logger.info(f"推理阶段总时长: {inference_phase_duration:.3f} 秒")
+                logger.info(f"推理时间占比: {inference_phase_duration / total_processing_time * 100:.1f}%")
+            else:
+                logger.info("推理阶段总时长: 无法计算（无推理操作）")
+            
+            # 累计推理时间（用于计算平均推理时间）
+            logger.info(f"累计推理时间: {self.stats['total_inference_time']:.3f} 秒")
+            
+            # 计算处理的总项目数（文件 + 帧）
+            total_processed_items = self.stats['processed_files']
+            if 'frame_classified_files' in self.stats:
+                total_processed_items += sum(self.stats['frame_classified_files'].values())
+            if 'frame_unknown_files' in self.stats:
+                total_processed_items += self.stats['frame_unknown_files']
+            
+            if self.stats['processed_files'] > 0:
+                logger.info(f"平均每文件处理时间: {total_processing_time / self.stats['processed_files']:.3f} 秒")
+            
+            if self.stats['total_inferences'] > 0:
+                logger.info(f"总推理次数: {self.stats['total_inferences']}")
+                logger.info(f"平均单次推理时间: {self.stats['total_inference_time'] / self.stats['total_inferences'] * 1000:.1f} 毫秒")
+                
+                # 使用推理阶段总时长计算实际FPS
+                if self.inference_start_time and self.inference_end_time:
+                    inference_phase_duration = self.inference_end_time - self.inference_start_time
+                    if inference_phase_duration > 0:
+                        logger.info(f"实际推理速度: {self.stats['total_inferences'] / inference_phase_duration:.1f} FPS")
+                else:
+                    logger.info("实际推理速度: 无法计算")
+        else:
+            logger.info("\n时间统计信息: 无法获取（计时错误）")
+
         logger.info("=" * 50)
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='YOLOv8目标检测和分类脚本')
+    parser = argparse.ArgumentParser(description='YOLOv8目标检测和分类脚本（支持并行处理）')
     
     parser.add_argument('--input', '-i', required=True, 
                        help='输入路径（图像/视频文件或包含图像/视频的目录）')
@@ -551,8 +999,19 @@ def main():
                        help='置信度阈值（默认: 0.5）')
     parser.add_argument('--visualize', '-v', action='store_true',
                        help='是否保存可视化检测结果')
+    parser.add_argument('--max-workers', '-w', type=int, default=4,
+                       help='最大并行工作线程数（默认: 4）')
+    parser.add_argument('--batch-size', '-b', type=int, default=8,
+                       help='图像批处理大小（默认: 8）')
+    parser.add_argument('--debug', '-d', action='store_true',
+                       help='启用调试模式，显示被过滤掉的低置信度检测结果')
     
     args = parser.parse_args()
+    
+    # 根据debug参数设置日志级别
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("已启用调试模式")
     
     # 验证输入参数
     if not os.path.exists(args.input):
@@ -565,6 +1024,14 @@ def main():
     
     if not os.path.exists(args.classes):
         logger.error(f"类别文件不存在: {args.classes}")
+        return
+    
+    if args.max_workers < 1:
+        logger.error("并行线程数必须大于0")
+        return
+    
+    if args.batch_size < 1:
+        logger.error("批处理大小必须大于0")
         return
     
     try:
@@ -580,7 +1047,9 @@ def main():
             input_path=args.input,
             output_path=args.output,
             detector=detector,
-            visualize=args.visualize
+            visualize=args.visualize,
+            max_workers=args.max_workers,
+            batch_size=args.batch_size
         )
         
         # 处理所有文件
