@@ -374,6 +374,24 @@ def visualize_dataset(image_dir, label_dir, classes_file, show_unlabeled=False):
     print("- 按 's' 保存当前图片")
     print("=" * 50)
     
+    def imread_unicode(path):
+        """
+        兼容中文路径的图片读取
+        Args:
+            path (str): 图片路径
+        Returns:
+            numpy.ndarray or None: 图片数组或None
+        """
+        try:
+            with open(path, "rb") as f:
+                bytes_data = bytearray(f.read())
+            np_array = np.asarray(bytes_data, dtype=np.uint8)
+            img = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
+            return img
+        except Exception as e:
+            print(f"imread_unicode 读取失败: {path}, 错误: {e}")
+            return None
+    
     while True:
         pair = pairs[current_index]
         img_file = pair['image']
@@ -382,7 +400,7 @@ def visualize_dataset(image_dir, label_dir, classes_file, show_unlabeled=False):
         
         # 读取图片
         try:
-            img = cv2.imread(str(img_file))
+            img = imread_unicode(str(img_file))
             if img is None:
                 print(f"无法读取图片: {img_file}")
                 current_index = (current_index + 1) % len(pairs)

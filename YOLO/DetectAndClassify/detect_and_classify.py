@@ -324,7 +324,7 @@ class FileProcessor:
     """文件处理器"""
     
     def __init__(self, input_path: str, output_path: str, detector: YOLODetectionClassifier, 
-                 visualize: bool = False, max_workers: int = 4, batch_size: int = 8):
+                 visualize: bool = False, max_workers: int = 4, batch_size: int = 8, save_labels: bool = False):
         """
         初始化文件处理器
         
@@ -335,6 +335,7 @@ class FileProcessor:
             visualize: 是否可视化
             max_workers: 最大并行工作线程数
             batch_size: 图像批处理大小
+            save_labels: 是否保存YOLO格式标签
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
@@ -342,6 +343,7 @@ class FileProcessor:
         self.visualize = visualize
         self.max_workers = max_workers
         self.batch_size = batch_size
+        self.save_labels = save_labels
         
         # 支持的图像格式
         self.image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
@@ -579,6 +581,52 @@ class FileProcessor:
                 logger.error(f"保存帧失败 {frame_path}: {e}")
                 self.update_error_files()
     
+    def save_yolo_label(self, image_path: Path, detections: list, image_shape: tuple, video_name: str = None, label_filename: str = None):
+        """
+        保存YOLO格式标签文件到labels目录，目录结构与输入一致
+        Args:
+            image_path: 原图像路径（Path对象）
+            detections: 检测结果列表，每个元素为dict，包含class/confidence/bbox
+            image_shape: (height, width)
+            video_name: 视频文件名（如有，表示为视频帧标签）
+            label_filename: 指定标签文件名（如有，优先使用）
+        """
+        if not detections:
+            return
+        
+        # 计算相对路径，构造标签文件路径
+        relative_path = self.get_relative_path(image_path)
+        if video_name:
+            label_dir = self.output_path / "labels" / relative_path.parent / video_name
+        else:
+            label_dir = self.output_path / "labels" / relative_path.parent
+        label_dir.mkdir(parents=True, exist_ok=True)
+        if label_filename:
+            label_path = label_dir / label_filename
+        else:
+            label_path = label_dir / (image_path.stem + ".txt")
+        
+        h, w = image_shape[:2]
+        lines = []
+        for det in detections:
+            class_name = det['class']
+            if class_name in self.detector.classes:
+                class_id = self.detector.classes.index(class_name)
+            else:
+                continue
+            x1, y1, x2, y2 = det['bbox']
+            # 归一化
+            x_center = ((x1 + x2) / 2) / w
+            y_center = ((y1 + y2) / 2) / h
+            width = (x2 - x1) / w
+            height = (y2 - y1) / h
+            lines.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
+        
+        # 写入文件
+        with open(label_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        logger.info(f"已保存YOLO标签: {label_path}")
+    
     def process_images_batch(self, image_paths: List[Path]) -> None:
         """
         批量处理图像文件
@@ -616,6 +664,10 @@ class FileProcessor:
                     if self.visualize and results_info['detections']:
                         vis_image = self.detector.visualize_detection(image, results_info)
                         self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
+                    
+                    # 保存YOLO标签（如果启用）
+                    if self.save_labels and results_info['detections']:
+                        self.save_yolo_label(image_path, results_info['detections'], image.shape)
                     
                     # 更新统计信息
                     self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
@@ -672,6 +724,10 @@ class FileProcessor:
                 vis_image = self.detector.visualize_detection(image, results_info)
                 self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
             
+            # 保存YOLO标签（如果启用）
+            if self.save_labels and results_info['detections']:
+                self.save_yolo_label(image_path, results_info['detections'], image.shape)
+            
             # 更新统计信息
             self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
             
@@ -714,6 +770,7 @@ class FileProcessor:
                 
                 # 创建帧文件名（6位数字，左侧补零）
                 frame_filename = f"frame_{frame_idx:06d}.jpg"
+                label_filename = f"frame_{frame_idx:06d}.txt"
                 
                 # 为每一帧创建输出目录（基于检测结果）
                 output_dirs = self.create_video_frame_dirs(detected_classes, video_name, relative_path)
@@ -739,6 +796,10 @@ class FileProcessor:
                             cv2.imwrite(str(vis_path), vis_image)
                         except Exception as e:
                             logger.error(f"保存可视化帧失败: {e}")
+                
+                # 保存YOLO标签（如果启用）
+                if self.save_labels and results_info['detections']:
+                    self.save_yolo_label(video_path, results_info['detections'], frame.shape, video_name=video_name, label_filename=label_filename)
                 
                 frame_idx += 1
                 processed_frames += 1
@@ -1005,6 +1066,8 @@ def main():
                        help='图像批处理大小（默认: 8）')
     parser.add_argument('--debug', '-d', action='store_true',
                        help='启用调试模式，显示被过滤掉的低置信度检测结果')
+    parser.add_argument('--save-labels', '-sl', action='store_true',
+                       help='是否保存YOLO格式标签到labels目录')
     
     args = parser.parse_args()
     
@@ -1049,7 +1112,8 @@ def main():
             detector=detector,
             visualize=args.visualize,
             max_workers=args.max_workers,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            save_labels=args.save_labels
         )
         
         # 处理所有文件
