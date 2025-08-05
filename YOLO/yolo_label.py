@@ -45,7 +45,7 @@ def generate_train_txt(folder_path):
 
     with open(os.path.join(output_folder, "train.txt"), "w") as f:
         for image_file in tqdm(image_files, desc="生成train.txt"):
-            f.write(f"data/{os.path.basename(folder_path)}/{image_file}\n")
+            f.write(f"data/images/{os.path.basename(folder_path)}/{image_file}\n")
     print(f"train.txt已生成在{output_folder}目录下")
 
 
