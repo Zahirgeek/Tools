@@ -287,36 +287,78 @@ class YOLODetectionClassifier:
         
         return detected_classes, results_info, inference_time
     
-    def visualize_detection(self, image: np.ndarray, results_info: dict) -> np.ndarray:
+    def visualize_detection(self, image: np.ndarray, results_info: dict, target_class: str = None) -> np.ndarray:
         """
         可视化检测结果
         
         Args:
             image: 原图像
             results_info: 检测结果信息
+            target_class: 目标类别，如果指定则只显示该类别的检测框
             
         Returns:
             visualized_image: 可视化后的图像
         """
         vis_image = image.copy()
+        height, width = vis_image.shape[:2]
         
         for detection in results_info['detections']:
-            bbox = detection['bbox']
             class_name = detection['class']
             confidence = detection['confidence']
             
+            # 如果指定了目标类别，则只显示该类别的检测框
+            if target_class is not None and class_name != target_class:
+                continue
+            
+            bbox = detection['bbox']
             x1, y1, x2, y2 = map(int, bbox)
+            
+            # 确保边界框坐标在图片范围内
+            x1 = max(0, min(x1, width - 1))
+            y1 = max(0, min(y1, height - 1))
+            x2 = max(0, min(x2, width - 1))
+            y2 = max(0, min(y2, height - 1))
             
             # 绘制边界框
             cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
             
             # 绘制标签
             label = f"{class_name}: {confidence:.2f}"
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-            cv2.rectangle(vis_image, (x1, y1 - label_size[1] - 10), 
-                         (x1 + label_size[0], y1), (0, 255, 0), -1)
-            cv2.putText(vis_image, label, (x1, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 2
+            
+            # 获取文字尺寸
+            (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            
+            # 计算标签背景框的位置
+            label_x = x1
+            label_y = y1 - 10  # 在边界框上方留10像素间距
+            
+            # 如果标签背景框超出上边界，则放在边界框下方
+            if label_y - text_height - baseline < 0:
+                label_y = y2 + text_height + baseline + 10
+            
+            # 如果标签背景框超出下边界，则放在边界框内部上方
+            if label_y + baseline > height:
+                label_y = y1 + text_height + baseline + 10
+            
+            # 确保标签背景框不超出左右边界
+            if label_x + text_width > width:
+                label_x = width - text_width - 5
+            
+            if label_x < 0:
+                label_x = 5
+            
+            # 绘制标签背景框
+            cv2.rectangle(vis_image, 
+                         (label_x - 5, label_y - text_height - baseline - 5),
+                         (label_x + text_width + 5, label_y + baseline + 5),
+                         (0, 255, 0), -1)
+            
+            # 绘制标签文字
+            cv2.putText(vis_image, label, (label_x, label_y), 
+                       font, font_scale, (0, 0, 0), thickness)
         
         return vis_image
 
@@ -539,9 +581,9 @@ class FileProcessor:
                 logger.error(f"保存文件失败 {dest_path}: {e}")
                 self.update_error_files()
     
-    def save_visualization(self, vis_image: np.ndarray, output_dirs: List[Path], 
+    def save_visualization(self, image: np.ndarray, results_info: dict, output_dirs: List[Path], 
                           filename: str, detected_classes: List[str]):
-        """保存可视化结果到vis目录"""
+        """保存可视化结果到vis目录，每个标签目录下只显示该标签的检测框"""
         if not self.visualize:
             return
         
@@ -553,9 +595,21 @@ class FileProcessor:
                 vis_dir = self.output_path / "vis" / relative_to_output
                 vis_dir.mkdir(parents=True, exist_ok=True)
                 
-                vis_path = vis_dir / filename  # 不再添加"vis_"前缀
+                # 确定当前目录对应的标签类别
+                if not detected_classes:
+                    # 如果是unknown目录，显示所有检测框
+                    target_class = None
+                else:
+                    # 根据目录名确定目标类别
+                    # 从目录路径中提取类别名（最后一个目录名）
+                    target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
+                
+                # 生成只包含目标类别检测框的可视化图片
+                vis_image = self.detector.visualize_detection(image, results_info, target_class)
+                
+                vis_path = vis_dir / filename
                 cv2.imwrite(str(vis_path), vis_image)
-                logger.info(f"已保存可视化结果: {vis_path}")
+                logger.info(f"已保存可视化结果: {vis_path} (类别: {target_class if target_class else 'unknown'})")
             except Exception as e:
                 logger.error(f"保存可视化结果失败: {e}")
     
@@ -581,31 +635,68 @@ class FileProcessor:
                 logger.error(f"保存帧失败 {frame_path}: {e}")
                 self.update_error_files()
     
-    def save_yolo_label(self, image_path: Path, detections: list, image_shape: tuple, video_name: str = None, label_filename: str = None):
+    def save_yolo_label(self, image_path: Path, detections: list, image_shape: tuple, image_data: np.ndarray = None, video_name: str = None, label_filename: str = None):
         """
-        保存YOLO格式标签文件到labels目录，目录结构与输入一致
+        保存YOLO格式标签文件和对应的图片到yolo_dataset目录
         Args:
             image_path: 原图像路径（Path对象）
             detections: 检测结果列表，每个元素为dict，包含class/confidence/bbox
             image_shape: (height, width)
+            image_data: 图像数据（numpy数组）
             video_name: 视频文件名（如有，表示为视频帧标签）
             label_filename: 指定标签文件名（如有，优先使用）
         """
         if not detections:
             return
         
-        # 计算相对路径，构造标签文件路径
+        # 计算相对路径，构造标签和图片文件路径
         relative_path = self.get_relative_path(image_path)
-        if video_name:
-            label_dir = self.output_path / "labels" / relative_path.parent / video_name
-        else:
-            label_dir = self.output_path / "labels" / relative_path.parent
-        label_dir.mkdir(parents=True, exist_ok=True)
-        if label_filename:
-            label_path = label_dir / label_filename
-        else:
-            label_path = label_dir / (image_path.stem + ".txt")
         
+        # 创建yolo_dataset目录结构
+        if video_name:
+            # 视频帧的情况
+            yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent / video_name
+            yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent / video_name
+        else:
+            # 图片的情况
+            yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent
+            yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent
+        
+        # 创建目录
+        yolo_images_dir.mkdir(parents=True, exist_ok=True)
+        yolo_labels_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 确定文件名
+        if label_filename:
+            # 视频帧的情况，使用指定的文件名
+            base_name = label_filename.replace('.txt', '')
+            image_filename = base_name + '.jpg'
+            label_filename_final = label_filename
+        else:
+            # 图片的情况，使用原文件名
+            base_name = image_path.stem
+            image_filename = image_path.name
+            label_filename_final = base_name + '.txt'
+        
+        # 保存图片
+        if image_data is not None:
+            image_path_yolo = yolo_images_dir / image_filename
+            try:
+                cv2.imwrite(str(image_path_yolo), image_data)
+                logger.info(f"已保存YOLO图片: {image_path_yolo}")
+            except Exception as e:
+                logger.error(f"保存YOLO图片失败: {e}")
+        else:
+            # 如果没有提供图像数据，复制原文件
+            image_path_yolo = yolo_images_dir / image_filename
+            try:
+                shutil.copy2(image_path, image_path_yolo)
+                logger.info(f"已复制YOLO图片: {image_path_yolo}")
+            except Exception as e:
+                logger.error(f"复制YOLO图片失败: {e}")
+        
+        # 保存标签文件
+        label_path = yolo_labels_dir / label_filename_final
         h, w = image_shape[:2]
         lines = []
         for det in detections:
@@ -622,10 +713,13 @@ class FileProcessor:
             height = (y2 - y1) / h
             lines.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
         
-        # 写入文件
-        with open(label_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines) + '\n')
-        logger.info(f"已保存YOLO标签: {label_path}")
+        # 写入标签文件
+        try:
+            with open(label_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+            logger.info(f"已保存YOLO标签: {label_path}")
+        except Exception as e:
+            logger.error(f"保存YOLO标签失败: {e}")
     
     def process_images_batch(self, image_paths: List[Path]) -> None:
         """
@@ -662,12 +756,11 @@ class FileProcessor:
                     
                     # 可视化（如果启用）
                     if self.visualize and results_info['detections']:
-                        vis_image = self.detector.visualize_detection(image, results_info)
-                        self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
+                        self.save_visualization(image, results_info, output_dirs, image_path.name, detected_classes)
                     
                     # 保存YOLO标签（如果启用）
                     if self.save_labels and results_info['detections']:
-                        self.save_yolo_label(image_path, results_info['detections'], image.shape)
+                        self.save_yolo_label(image_path, results_info['detections'], image.shape, image_data=image)
                     
                     # 更新统计信息
                     self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
@@ -721,12 +814,11 @@ class FileProcessor:
             
             # 可视化（如果启用）
             if self.visualize and results_info['detections']:
-                vis_image = self.detector.visualize_detection(image, results_info)
-                self.save_visualization(vis_image, output_dirs, image_path.name, detected_classes)
+                self.save_visualization(image, results_info, output_dirs, image_path.name, detected_classes)
             
             # 保存YOLO标签（如果启用）
             if self.save_labels and results_info['detections']:
-                self.save_yolo_label(image_path, results_info['detections'], image.shape)
+                self.save_yolo_label(image_path, results_info['detections'], image.shape, image_data=image)
             
             # 更新统计信息
             self.update_stats_thread_safe(detected_classes, is_frame=False, inference_time=inference_time)
@@ -783,23 +875,32 @@ class FileProcessor:
                 
                 # 可视化（如果启用）
                 if self.visualize and results_info['detections']:
-                    vis_image = self.detector.visualize_detection(frame, results_info)
-                    
-                    # 保存可视化帧到vis目录
-                    for output_dir in output_dirs:
+                    # 为每个输出目录创建对应的vis目录并保存对应的可视化结果
+                    for i, output_dir in enumerate(output_dirs):
                         try:
                             relative_to_output = output_dir.relative_to(self.output_path)
                             vis_dir = self.output_path / "vis" / relative_to_output
                             vis_dir.mkdir(parents=True, exist_ok=True)
                             
-                            vis_path = vis_dir / frame_filename  # 使用相同的文件名
+                            # 确定当前目录对应的标签类别
+                            if not detected_classes:
+                                # 如果是unknown目录，显示所有检测框
+                                target_class = None
+                            else:
+                                # 根据目录名确定目标类别
+                                target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
+                            
+                            # 生成只包含目标类别检测框的可视化图片
+                            vis_image = self.detector.visualize_detection(frame, results_info, target_class)
+                            
+                            vis_path = vis_dir / frame_filename
                             cv2.imwrite(str(vis_path), vis_image)
                         except Exception as e:
                             logger.error(f"保存可视化帧失败: {e}")
                 
                 # 保存YOLO标签（如果启用）
                 if self.save_labels and results_info['detections']:
-                    self.save_yolo_label(video_path, results_info['detections'], frame.shape, video_name=video_name, label_filename=label_filename)
+                    self.save_yolo_label(video_path, results_info['detections'], frame.shape, image_data=frame, video_name=video_name, label_filename=label_filename)
                 
                 frame_idx += 1
                 processed_frames += 1
@@ -1067,7 +1168,7 @@ def main():
     parser.add_argument('--debug', '-d', action='store_true',
                        help='启用调试模式，显示被过滤掉的低置信度检测结果')
     parser.add_argument('--save-labels', '-sl', action='store_true',
-                       help='是否保存YOLO格式标签到labels目录')
+                       help='是否保存YOLO格式标签')
     
     args = parser.parse_args()
     

@@ -135,6 +135,10 @@ class RandomFileProcessor:
         """
         计算每个子目录应该分配的文件数量
         
+        分配逻辑：
+        1. 如果某个文件夹的文件数量不够平均分配数，则全选该文件夹的文件
+        2. 剩余的文件在其他文件夹中均匀随机选取
+        
         Args:
             file_distribution: 文件分布统计
             
@@ -153,31 +157,70 @@ class RandomFileProcessor:
         base_allocation = self.target_count // total_subdirs
         remaining_files = self.target_count % total_subdirs
         
+        logger.info(f"基础分配数量: {base_allocation} 个文件/目录")
+        logger.info(f"剩余文件数: {remaining_files}")
+        
         allocation = {}
+        insufficient_dirs = []  # 文件数量不足的目录
+        sufficient_dirs = []    # 文件数量充足的目录
         
-        # 按文件数量排序，确保文件少的目录优先分配
-        sorted_subdirs = sorted(subdirs, key=lambda x: file_distribution[x])
-        
-        for subdir in sorted_subdirs:
+        # 第一步：识别文件数量不足和充足的目录
+        for subdir in subdirs:
             available_files = file_distribution[subdir]
-            
-            # 如果可用文件数小于基础分配数，则全部分配
             if available_files <= base_allocation:
-                allocation[subdir] = available_files
-                remaining_files += (base_allocation - available_files)
+                insufficient_dirs.append(subdir)
+                logger.info(f"目录 {subdir} 文件不足: {available_files} <= {base_allocation}")
             else:
-                # 分配基础数量
-                allocation[subdir] = base_allocation
+                sufficient_dirs.append(subdir)
+                logger.info(f"目录 {subdir} 文件充足: {available_files} > {base_allocation}")
+        
+        # 第二步：处理文件数量不足的目录（全选）
+        total_allocated = 0
+        for subdir in insufficient_dirs:
+            available_files = file_distribution[subdir]
+            allocation[subdir] = available_files
+            total_allocated += available_files
+            logger.info(f"全选目录 {subdir}: {available_files} 个文件")
+        
+        # 第三步：计算剩余需要分配的文件数
+        remaining_to_allocate = self.target_count - total_allocated
+        logger.info(f"已分配: {total_allocated} 个文件")
+        logger.info(f"还需分配: {remaining_to_allocate} 个文件")
+        
+        # 第四步：在文件充足的目录中均匀分配剩余文件
+        if remaining_to_allocate > 0 and sufficient_dirs:
+            # 计算每个充足目录应该分配的数量
+            files_per_sufficient_dir = remaining_to_allocate // len(sufficient_dirs)
+            extra_files = remaining_to_allocate % len(sufficient_dirs)
+            
+            logger.info(f"每个充足目录分配: {files_per_sufficient_dir} 个文件")
+            logger.info(f"额外文件数: {extra_files}")
+            
+            for i, subdir in enumerate(sufficient_dirs):
+                available_files = file_distribution[subdir]
+                target_count = files_per_sufficient_dir
                 
-                # 如果还有剩余文件需要分配，且当前目录有足够文件
-                if remaining_files > 0 and available_files > base_allocation:
-                    additional = min(remaining_files, available_files - base_allocation)
-                    allocation[subdir] += additional
-                    remaining_files -= additional
+                # 分配额外文件（前几个目录多分配一个）
+                if i < extra_files:
+                    target_count += 1
+                
+                # 确保不超过可用文件数
+                actual_count = min(target_count, available_files)
+                allocation[subdir] = actual_count
+                
+                logger.info(f"目录 {subdir} 分配: {actual_count} 个文件 (可用: {available_files})")
+        
+        # 验证分配结果
+        total_allocated_final = sum(allocation.values())
+        logger.info(f"最终分配总数: {total_allocated_final}/{self.target_count}")
+        
+        if total_allocated_final < self.target_count:
+            logger.warning(f"分配不足: 需要 {self.target_count} 个文件，实际分配 {total_allocated_final} 个文件")
         
         logger.info("文件分配方案:")
         for subdir, count in allocation.items():
-            logger.info(f"  {subdir}: {count} 个文件")
+            available = file_distribution.get(subdir, 0)
+            logger.info(f"  {subdir}: {count}/{available} 个文件")
         
         return allocation
     
@@ -296,22 +339,53 @@ class RandomFileProcessor:
         
         print("📊 文件分布统计:")
         total_available = sum(file_distribution.values())
+        base_allocation = self.target_count // len(file_distribution) if file_distribution else 0
         print(f"   • 子目录数量: {len(file_distribution)}")
         print(f"   • 可用文件总数: {total_available}")
         print(f"   • 目标选取文件数: {self.target_count}")
+        print(f"   • 平均分配数量: {base_allocation} 个文件/目录")
         print()
         
-        print("📋 文件分配方案:")
-        for subdir, count in sorted(allocation.items()):
+        # 分析分配策略
+        insufficient_dirs = []
+        sufficient_dirs = []
+        for subdir, count in allocation.items():
             available = file_distribution.get(subdir, 0)
-            print(f"   • {subdir}: {count}/{available} 个文件")
+            if available <= base_allocation:
+                insufficient_dirs.append((subdir, count, available))
+            else:
+                sufficient_dirs.append((subdir, count, available))
+        
+        print("📋 文件分配方案:")
+        if insufficient_dirs:
+            print("   🔴 全选目录 (文件数量不足):")
+            for subdir, count, available in insufficient_dirs:
+                print(f"      • {subdir}: {count}/{available} 个文件 (全选)")
+        
+        if sufficient_dirs:
+            print("   🟢 均匀分配目录 (文件数量充足):")
+            for subdir, count, available in sufficient_dirs:
+                print(f"      • {subdir}: {count}/{available} 个文件 (随机选取)")
+        
+        print()
+        
+        # 计算分配统计
+        total_allocated = sum(allocation.values())
+        allocation_rate = total_allocated / self.target_count * 100 if self.target_count > 0 else 0
+        
+        print("📈 分配统计:")
+        print(f"   • 实际分配文件数: {total_allocated}")
+        print(f"   • 分配完成率: {allocation_rate:.1f}%")
+        if total_allocated < self.target_count:
+            print(f"   • 分配不足: {self.target_count - total_allocated} 个文件")
         print()
         
         print("📁 处理结果:")
         print(f"   • 选中文件数: {len(selected_files)}")
         print(f"   • 成功处理: {success_count}")
         print(f"   • 处理失败: {failed_count}")
-        print(f"   • 成功率: {success_count/(success_count+failed_count)*100:.1f}%" if (success_count+failed_count) > 0 else "   • 成功率: 0%")
+        success_rate = success_count/(success_count+failed_count)*100 if (success_count+failed_count) > 0 else 0
+        print(f"   • 成功率: {success_rate:.1f}%")
         print("="*80)
     
     def run(self) -> bool:
