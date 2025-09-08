@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class RandomFileProcessor:
     """随机文件处理器"""
     
-    def __init__(self, source_path: str, target_count: int, output_path: str, operation: str = "copy"):
+    def __init__(self, source_path: str, target_count: int, output_path: str, operation: str = "copy", flat_output: bool = False):
         """
         初始化处理器
         
@@ -30,11 +30,13 @@ class RandomFileProcessor:
             target_count: 目标文件总数
             output_path: 输出路径
             operation: 操作类型 ("copy" 或 "cut")
+            flat_output: 是否扁平化输出（不保持目录结构）
         """
         self.source_path = Path(source_path)
         self.target_count = target_count
         self.output_path = Path(output_path)
         self.operation = operation.lower()
+        self.flat_output = flat_output
         
         if not self.source_path.exists():
             raise ValueError(f"源路径不存在: {source_path}")
@@ -274,6 +276,32 @@ class RandomFileProcessor:
             logger.error(f"创建输出目录时出错: {e}")
             raise
     
+    def generate_unique_filename(self, target_path: Path) -> Path:
+        """
+        生成唯一的文件名，避免重复
+        
+        Args:
+            target_path: 目标路径
+            
+        Returns:
+            唯一的文件路径
+        """
+        if not target_path.exists():
+            return target_path
+        
+        # 分离文件名和扩展名
+        stem = target_path.stem
+        suffix = target_path.suffix
+        parent = target_path.parent
+        
+        counter = 1
+        while True:
+            new_name = f"{stem}_{counter}{suffix}"
+            new_path = parent / new_name
+            if not new_path.exists():
+                return new_path
+            counter += 1
+    
     def process_files(self, selected_files: List[Path]) -> Tuple[int, int]:
         """
         处理选中的文件（复制或剪切）
@@ -293,12 +321,20 @@ class RandomFileProcessor:
         
         for file_path in selected_files:
             try:
-                # 计算目标路径
-                relative_path = file_path.relative_to(self.source_path)
-                target_path = self.output_path / relative_path
+                if self.flat_output:
+                    # 扁平化输出：直接保存到输出根目录
+                    target_path = self.output_path / file_path.name
+                else:
+                    # 保持目录结构
+                    relative_path = file_path.relative_to(self.source_path)
+                    target_path = self.output_path / relative_path
                 
-                # 创建目标目录
-                target_path.parent.mkdir(parents=True, exist_ok=True)
+                # 扁平化输出时处理重名文件
+                if self.flat_output:
+                    target_path = self.generate_unique_filename(target_path)
+                else:
+                    # 创建目标目录
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 if self.operation == "copy":
                     shutil.copy2(file_path, target_path)
@@ -335,6 +371,7 @@ class RandomFileProcessor:
         print(f"目标文件数: {self.target_count}")
         print(f"操作类型: {self.operation}")
         print(f"输出路径: {self.output_path}")
+        print(f"输出模式: {'扁平化输出' if self.flat_output else '保持目录结构'}")
         print()
         
         print("📊 文件分布统计:")
@@ -435,6 +472,8 @@ def main():
     parser.add_argument("output_path", help="输出路径")
     parser.add_argument("-o", "--operation", choices=["copy", "cut"], default="copy",
                        help="操作类型: copy(复制) 或 cut(剪切), 默认为copy")
+    parser.add_argument("-f", "--flat", action="store_true",
+                       help="扁平化输出：不保持目录结构，所有文件直接保存到输出根目录")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示详细日志")
     
     args = parser.parse_args()
@@ -449,7 +488,8 @@ def main():
             args.source_path, 
             args.target_count, 
             args.output_path, 
-            args.operation
+            args.operation,
+            args.flat
         )
         
         # 执行处理
