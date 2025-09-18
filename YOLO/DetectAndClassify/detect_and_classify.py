@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import threading
 from queue import Queue
 import time
+import torch # Added for device selection
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class YOLODetectionClassifier:
     """YOLO检测分类器"""
     
-    def __init__(self, model_path: str, classes_path: str, confidence_threshold: float = 0.5):
+    def __init__(self, model_path: str, classes_path: str, confidence_threshold: float = 0.5, device: str = "auto"):
         """
         初始化检测分类器
         
@@ -35,19 +36,42 @@ class YOLODetectionClassifier:
             model_path: YOLO模型路径
             classes_path: 类别文件路径
             confidence_threshold: 置信度阈值
+            device: 推理设备 ("auto", "cpu", "cuda", "0", "1" 等)
         """
         self.model_path = model_path
         self.classes_path = classes_path
         self.confidence_threshold = confidence_threshold
+        self.device = device
         
         # 加载模型
         logger.info(f"正在加载YOLO模型: {model_path}")
-        self.model = YOLO(model_path)
+        try:
+            self.model = YOLO(model_path)
+            # 设置推理设备
+            if device == "cpu":
+                self.model.to("cpu")
+                logger.info("模型已设置为CPU推理模式")
+            elif device == "auto":
+                # 自动选择设备
+                if torch.cuda.is_available():
+                    self.model.to("cuda")
+                    logger.info("模型已设置为CUDA推理模式")
+                else:
+                    self.model.to("cpu")
+                    logger.info("CUDA不可用，模型已设置为CPU推理模式")
+            else:
+                # 用户指定的设备
+                self.model.to(device)
+                logger.info(f"模型已设置为设备: {device}")
+        except Exception as e:
+            logger.error(f"模型加载失败: {e}")
+            raise
         
         # 加载类别
         self.classes = self._load_classes(classes_path)
         logger.info(f"加载了 {len(self.classes)} 个类别: {self.classes}")
         logger.info(f"置信度阈值设置为: {self.confidence_threshold}")
+        logger.info(f"推理设备: {self.model.device}")
     
     def _load_classes(self, classes_path: str) -> List[str]:
         """加载类别文件"""
@@ -79,9 +103,21 @@ class YOLODetectionClassifier:
         if processor:
             processor.record_inference_start()
         
+        # 验证输入参数
+        if not isinstance(self.confidence_threshold, (int, float)) or not np.isfinite(self.confidence_threshold):
+            logger.error(f"置信度阈值无效: {self.confidence_threshold}")
+            return [], image, {'detections': [], 'class_counts': {}}, 0.0
+        
+        if self.confidence_threshold < 0 or self.confidence_threshold > 1:
+            logger.warning(f"置信度阈值超出正常范围 [0,1]: {self.confidence_threshold}")
+        
         # 进行检测并计时
         inference_start = time.time()
-        results = self.model(image_path, conf=self.confidence_threshold)
+        try:
+            results = self.model(image_path, conf=self.confidence_threshold)
+        except Exception as e:
+            logger.error(f"模型推理失败: {e}")
+            return [], image, {'detections': [], 'class_counts': {}}, 0.0
         inference_time = time.time() - inference_start
         
         # 记录推理阶段结束时间
@@ -98,31 +134,77 @@ class YOLODetectionClassifier:
             result = results[0]
             if result.boxes is not None and len(result.boxes) > 0:
                 for box in result.boxes:
-                    cls_id = int(box.cls.cpu().numpy()[0])
-                    confidence = float(box.conf.cpu().numpy()[0])
-                    
-                    # 确保置信度满足阈值要求
-                    if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
-                        class_name = self.classes[cls_id]
-                        if class_name not in detected_classes:
-                            detected_classes.append(class_name)
+                    try:
+                        # 安全地提取类别ID和置信度
+                        cls_tensor = box.cls
+                        conf_tensor = box.conf
                         
-                        # 记录检测信息
-                        bbox = box.xyxy.cpu().numpy()[0].tolist()
-                        results_info['detections'].append({
-                            'class': class_name,
-                            'confidence': confidence,
-                            'bbox': bbox
-                        })
+                        if cls_tensor is None or conf_tensor is None:
+                            logger.warning("跳过无效的检测框（类别或置信度为空）")
+                            continue
                         
-                        # 统计类别数量
-                        if class_name not in results_info['class_counts']:
-                            results_info['class_counts'][class_name] = 0
-                        results_info['class_counts'][class_name] += 1
-                    elif cls_id < len(self.classes):
-                        # 记录被过滤掉的低置信度检测
-                        class_name = self.classes[cls_id]
-                        logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                        # 转换为numpy数组并验证
+                        cls_array = cls_tensor.cpu().numpy()
+                        conf_array = conf_tensor.cpu().numpy()
+                        
+                        if len(cls_array) == 0 or len(conf_array) == 0:
+                            logger.warning("跳过空的检测框数据")
+                            continue
+                        
+                        cls_id = int(cls_array[0])
+                        confidence = float(conf_array[0])
+                        
+                        # 验证数据类型和范围
+                        if not isinstance(cls_id, int) or not isinstance(confidence, (int, float)):
+                            logger.warning(f"跳过无效的数据类型: cls_id={type(cls_id)}, confidence={type(confidence)}")
+                            continue
+                        
+                        if not np.isfinite(cls_id) or not np.isfinite(confidence):
+                            logger.warning(f"跳过非有限数值: cls_id={cls_id}, confidence={confidence}")
+                            continue
+                        
+                        # 验证数值范围
+                        if cls_id < 0 or not np.isfinite(confidence):
+                            logger.warning(f"跳过无效的类别ID或置信度: cls_id={cls_id}, confidence={confidence}")
+                            continue
+                        
+                        # 确保置信度满足阈值要求
+                        if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
+                            class_name = self.classes[cls_id]
+                            if class_name not in detected_classes:
+                                detected_classes.append(class_name)
+                            
+                            # 记录检测信息
+                            try:
+                                bbox = box.xyxy.cpu().numpy()[0].tolist()
+                                # 验证边界框数据
+                                if len(bbox) == 4 and all(isinstance(x, (int, float)) and np.isfinite(x) for x in bbox):
+                                    results_info['detections'].append({
+                                        'class': class_name,
+                                        'confidence': confidence,
+                                        'bbox': bbox
+                                    })
+                                else:
+                                    logger.warning(f"跳过无效的边界框数据: {bbox}")
+                                    continue
+                            except Exception as e:
+                                logger.warning(f"处理边界框时出错: {e}")
+                                continue
+                            
+                            # 统计类别数量
+                            if class_name not in results_info['class_counts']:
+                                results_info['class_counts'][class_name] = 0
+                            results_info['class_counts'][class_name] += 1
+                        elif cls_id < len(self.classes):
+                            # 记录被过滤掉的低置信度检测
+                            class_name = self.classes[cls_id]
+                            logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                        else:
+                            logger.warning(f"类别ID超出范围: {cls_id} >= {len(self.classes)}")
+                            
+                    except Exception as e:
+                        logger.warning(f"处理检测框时出错: {e}")
+                        continue
         
         return detected_classes, image, results_info, inference_time
     
@@ -164,6 +246,17 @@ class YOLODetectionClassifier:
             if processor:
                 processor.record_inference_start()
             
+            # 验证输入参数
+            if not isinstance(self.confidence_threshold, (int, float)) or not np.isfinite(self.confidence_threshold):
+                logger.error(f"置信度阈值无效: {self.confidence_threshold}")
+                # 为每个无效路径返回空结果
+                for path in valid_paths:
+                    all_results.append((path, [], None, {'detections': [], 'class_counts': {}}, 0.0))
+                continue
+            
+            if self.confidence_threshold < 0 or self.confidence_threshold > 1:
+                logger.warning(f"置信度阈值超出正常范围 [0,1]: {self.confidence_threshold}")
+            
             # 批量推理
             try:
                 batch_inference_start = time.time()
@@ -185,31 +278,77 @@ class YOLODetectionClassifier:
                     
                     if result.boxes is not None and len(result.boxes) > 0:
                         for box in result.boxes:
-                            cls_id = int(box.cls.cpu().numpy()[0])
-                            confidence = float(box.conf.cpu().numpy()[0])
-                            
-                            # 确保置信度满足阈值要求
-                            if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
-                                class_name = self.classes[cls_id]
-                                if class_name not in detected_classes:
-                                    detected_classes.append(class_name)
+                            try:
+                                # 安全地提取类别ID和置信度
+                                cls_tensor = box.cls
+                                conf_tensor = box.conf
                                 
-                                # 记录检测信息
-                                bbox = box.xyxy.cpu().numpy()[0].tolist()
-                                results_info['detections'].append({
-                                    'class': class_name,
-                                    'confidence': confidence,
-                                    'bbox': bbox
-                                })
+                                if cls_tensor is None or conf_tensor is None:
+                                    logger.warning("跳过无效的检测框（类别或置信度为空）")
+                                    continue
                                 
-                                # 统计类别数量
-                                if class_name not in results_info['class_counts']:
-                                    results_info['class_counts'][class_name] = 0
-                                results_info['class_counts'][class_name] += 1
-                            elif cls_id < len(self.classes):
-                                # 记录被过滤掉的低置信度检测
-                                class_name = self.classes[cls_id]
-                                logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                                # 转换为numpy数组并验证
+                                cls_array = cls_tensor.cpu().numpy()
+                                conf_array = conf_tensor.cpu().numpy()
+                                
+                                if len(cls_array) == 0 or len(conf_array) == 0:
+                                    logger.warning("跳过空的检测框数据")
+                                    continue
+                                
+                                cls_id = int(cls_array[0])
+                                confidence = float(conf_array[0])
+                                
+                                # 验证数据类型和范围
+                                if not isinstance(cls_id, int) or not isinstance(confidence, (int, float)):
+                                    logger.warning(f"跳过无效的数据类型: cls_id={type(cls_id)}, confidence={type(confidence)}")
+                                    continue
+                                
+                                if not np.isfinite(cls_id) or not np.isfinite(confidence):
+                                    logger.warning(f"跳过非有限数值: cls_id={cls_id}, confidence={confidence}")
+                                    continue
+                                
+                                # 验证数值范围
+                                if cls_id < 0 or not np.isfinite(confidence):
+                                    logger.warning(f"跳过无效的类别ID或置信度: cls_id={cls_id}, confidence={confidence}")
+                                    continue
+                                
+                                # 确保置信度满足阈值要求
+                                if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
+                                    class_name = self.classes[cls_id]
+                                    if class_name not in detected_classes:
+                                        detected_classes.append(class_name)
+                                    
+                                    # 记录检测信息
+                                    try:
+                                        bbox = box.xyxy.cpu().numpy()[0].tolist()
+                                        # 验证边界框数据
+                                        if len(bbox) == 4 and all(isinstance(x, (int, float)) and np.isfinite(x) for x in bbox):
+                                            results_info['detections'].append({
+                                                'class': class_name,
+                                                'confidence': confidence,
+                                                'bbox': bbox
+                                            })
+                                        else:
+                                            logger.warning(f"跳过无效的边界框数据: {bbox}")
+                                            continue
+                                    except Exception as e:
+                                        logger.warning(f"处理边界框时出错: {e}")
+                                        continue
+                                    
+                                    # 统计类别数量
+                                    if class_name not in results_info['class_counts']:
+                                        results_info['class_counts'][class_name] = 0
+                                    results_info['class_counts'][class_name] += 1
+                                elif cls_id < len(self.classes):
+                                    # 记录被过滤掉的低置信度检测
+                                    class_name = self.classes[cls_id]
+                                    logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                                else:
+                                    logger.warning(f"类别ID超出范围: {cls_id} >= {len(self.classes)}")
+                                    
+                            except Exception as e:
+                                logger.warning(f"处理检测框时出错: {e}")
+                                continue
                     
                     all_results.append((path, detected_classes, image, results_info, avg_inference_time))
                     
@@ -243,8 +382,25 @@ class YOLODetectionClassifier:
         if processor:
             processor.record_inference_start()
         
+        # 验证输入参数
+        if not isinstance(self.confidence_threshold, (int, float)) or not np.isfinite(self.confidence_threshold):
+            logger.error(f"置信度阈值无效: {self.confidence_threshold}")
+            return [], {'detections': [], 'class_counts': {}}, 0.0
+        
+        if self.confidence_threshold < 0 or self.confidence_threshold > 1:
+            logger.warning(f"置信度阈值超出正常范围 [0,1]: {self.confidence_threshold}")
+        
+        # 验证输入帧
+        if frame is None or not isinstance(frame, np.ndarray):
+            logger.error("输入帧无效")
+            return [], {'detections': [], 'class_counts': {}}, 0.0
+        
         inference_start = time.time()
-        results = self.model(frame, conf=self.confidence_threshold)
+        try:
+            results = self.model(frame, conf=self.confidence_threshold)
+        except Exception as e:
+            logger.error(f"模型推理失败: {e}")
+            return [], {'detections': [], 'class_counts': {}}, 0.0
         inference_time = time.time() - inference_start
         
         # 记录推理阶段结束时间
@@ -261,29 +417,77 @@ class YOLODetectionClassifier:
             result = results[0]
             if result.boxes is not None and len(result.boxes) > 0:
                 for box in result.boxes:
-                    cls_id = int(box.cls.cpu().numpy()[0])
-                    confidence = float(box.conf.cpu().numpy()[0])
-                    
-                    # 确保置信度满足阈值要求
-                    if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
-                        class_name = self.classes[cls_id]
-                        if class_name not in detected_classes:
-                            detected_classes.append(class_name)
+                    try:
+                        # 安全地提取类别ID和置信度
+                        cls_tensor = box.cls
+                        conf_tensor = box.conf
                         
-                        bbox = box.xyxy.cpu().numpy()[0].tolist()
-                        results_info['detections'].append({
-                            'class': class_name,
-                            'confidence': confidence,
-                            'bbox': bbox
-                        })
+                        if cls_tensor is None or conf_tensor is None:
+                            logger.warning("跳过无效的检测框（类别或置信度为空）")
+                            continue
                         
-                        if class_name not in results_info['class_counts']:
-                            results_info['class_counts'][class_name] = 0
-                        results_info['class_counts'][class_name] += 1
-                    elif cls_id < len(self.classes):
-                        # 记录被过滤掉的低置信度检测
-                        class_name = self.classes[cls_id]
-                        logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                        # 转换为numpy数组并验证
+                        cls_array = cls_tensor.cpu().numpy()
+                        conf_array = conf_tensor.cpu().numpy()
+                        
+                        if len(cls_array) == 0 or len(conf_array) == 0:
+                            logger.warning("跳过空的检测框数据")
+                            continue
+                        
+                        cls_id = int(cls_array[0])
+                        confidence = float(conf_array[0])
+                        
+                        # 验证数据类型和范围
+                        if not isinstance(cls_id, int) or not isinstance(confidence, (int, float)):
+                            logger.warning(f"跳过无效的数据类型: cls_id={type(cls_id)}, confidence={type(confidence)}")
+                            continue
+                        
+                        if not np.isfinite(cls_id) or not np.isfinite(confidence):
+                            logger.warning(f"跳过非有限数值: cls_id={cls_id}, confidence={confidence}")
+                            continue
+                        
+                        # 验证数值范围
+                        if cls_id < 0 or not np.isfinite(confidence):
+                            logger.warning(f"跳过无效的类别ID或置信度: cls_id={cls_id}, confidence={confidence}")
+                            continue
+                        
+                        # 确保置信度满足阈值要求
+                        if cls_id < len(self.classes) and confidence >= self.confidence_threshold:
+                            class_name = self.classes[cls_id]
+                            if class_name not in detected_classes:
+                                detected_classes.append(class_name)
+                            
+                            # 记录检测信息
+                            try:
+                                bbox = box.xyxy.cpu().numpy()[0].tolist()
+                                # 验证边界框数据
+                                if len(bbox) == 4 and all(isinstance(x, (int, float)) and np.isfinite(x) for x in bbox):
+                                    results_info['detections'].append({
+                                        'class': class_name,
+                                        'confidence': confidence,
+                                        'bbox': bbox
+                                    })
+                                else:
+                                    logger.warning(f"跳过无效的边界框数据: {bbox}")
+                                    continue
+                            except Exception as e:
+                                logger.warning(f"处理边界框时出错: {e}")
+                                continue
+                            
+                            # 统计类别数量
+                            if class_name not in results_info['class_counts']:
+                                results_info['class_counts'][class_name] = 0
+                            results_info['class_counts'][class_name] += 1
+                        elif cls_id < len(self.classes):
+                            # 记录被过滤掉的低置信度检测
+                            class_name = self.classes[cls_id]
+                            logger.debug(f"过滤低置信度检测: {class_name} (置信度: {confidence:.3f} < {self.confidence_threshold:.3f})")
+                        else:
+                            logger.warning(f"类别ID超出范围: {cls_id} >= {len(self.classes)}")
+                            
+                    except Exception as e:
+                        logger.warning(f"处理检测框时出错: {e}")
+                        continue
         
         return detected_classes, results_info, inference_time
     
@@ -366,7 +570,8 @@ class FileProcessor:
     """文件处理器"""
     
     def __init__(self, input_path: str, output_path: str, detector: YOLODetectionClassifier, 
-                 visualize: bool = False, max_workers: int = 4, batch_size: int = 8, save_labels: bool = False):
+                 visualize: bool = False, max_workers: int = 4, batch_size: int = 8, save_labels: bool = False, 
+                 single_folder: bool = False):
         """
         初始化文件处理器
         
@@ -378,6 +583,7 @@ class FileProcessor:
             max_workers: 最大并行工作线程数
             batch_size: 图像批处理大小
             save_labels: 是否保存YOLO格式标签
+            single_folder: 是否将所有结果保存在单个文件夹中（不按类别分类）
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
@@ -386,6 +592,7 @@ class FileProcessor:
         self.max_workers = max_workers
         self.batch_size = batch_size
         self.save_labels = save_labels
+        self.single_folder = single_folder
         
         # 支持的图像格式
         self.image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
@@ -512,17 +719,24 @@ class FileProcessor:
         """
         output_dirs = []
         
-        if not detected_classes:
-            # 没有检测到目标，保存到unknown文件夹
-            unknown_dir = self.output_path / "unknown" / relative_path.parent
-            unknown_dir.mkdir(parents=True, exist_ok=True)
-            output_dirs.append(unknown_dir)
+        if self.single_folder:
+            # 单文件夹模式：所有结果都保存在一个文件夹中
+            single_dir = self.output_path / "detected" / relative_path.parent
+            single_dir.mkdir(parents=True, exist_ok=True)
+            output_dirs.append(single_dir)
         else:
-            # 为每个检测到的类别创建目录
-            for class_name in detected_classes:
-                class_dir = self.output_path / class_name / relative_path.parent
-                class_dir.mkdir(parents=True, exist_ok=True)
-                output_dirs.append(class_dir)
+            # 原模式：按类别分文件夹
+            if not detected_classes:
+                # 没有检测到目标，保存到unknown文件夹
+                unknown_dir = self.output_path / "unknown" / relative_path.parent
+                unknown_dir.mkdir(parents=True, exist_ok=True)
+                output_dirs.append(unknown_dir)
+            else:
+                # 为每个检测到的类别创建目录
+                for class_name in detected_classes:
+                    class_dir = self.output_path / class_name / relative_path.parent
+                    class_dir.mkdir(parents=True, exist_ok=True)
+                    output_dirs.append(class_dir)
         
         return output_dirs
     
@@ -540,17 +754,24 @@ class FileProcessor:
         """
         output_dirs = []
         
-        if not detected_classes:
-            # 没有检测到目标，保存到unknown文件夹下的视频名文件夹
-            unknown_dir = self.output_path / "unknown" / relative_path.parent / video_name
-            unknown_dir.mkdir(parents=True, exist_ok=True)
-            output_dirs.append(unknown_dir)
+        if self.single_folder:
+            # 单文件夹模式：所有视频帧都保存在一个文件夹中
+            single_dir = self.output_path / "detected" / relative_path.parent / video_name
+            single_dir.mkdir(parents=True, exist_ok=True)
+            output_dirs.append(single_dir)
         else:
-            # 为每个检测到的类别创建目录
-            for class_name in detected_classes:
-                class_dir = self.output_path / class_name / relative_path.parent / video_name
-                class_dir.mkdir(parents=True, exist_ok=True)
-                output_dirs.append(class_dir)
+            # 原模式：按类别分文件夹
+            if not detected_classes:
+                # 没有检测到目标，保存到unknown文件夹下的视频名文件夹
+                unknown_dir = self.output_path / "unknown" / relative_path.parent / video_name
+                unknown_dir.mkdir(parents=True, exist_ok=True)
+                output_dirs.append(unknown_dir)
+            else:
+                # 为每个检测到的类别创建目录
+                for class_name in detected_classes:
+                    class_dir = self.output_path / class_name / relative_path.parent / video_name
+                    class_dir.mkdir(parents=True, exist_ok=True)
+                    output_dirs.append(class_dir)
         
         return output_dirs
     
@@ -583,35 +804,50 @@ class FileProcessor:
     
     def save_visualization(self, image: np.ndarray, results_info: dict, output_dirs: List[Path], 
                           filename: str, detected_classes: List[str]):
-        """保存可视化结果到vis目录，每个标签目录下只显示该标签的检测框"""
+        """保存可视化结果到vis目录"""
         if not self.visualize:
             return
         
-        # 为每个输出目录创建对应的vis目录
-        for i, output_dir in enumerate(output_dirs):
-            # 获取相对于输出根目录的路径
+        if self.single_folder:
+            # 单文件夹模式：只保存一个可视化图片，显示所有检测框
             try:
-                relative_to_output = output_dir.relative_to(self.output_path)
-                vis_dir = self.output_path / "vis" / relative_to_output
+                vis_dir = self.output_path / "vis" / "detected"
                 vis_dir.mkdir(parents=True, exist_ok=True)
                 
-                # 确定当前目录对应的标签类别
-                if not detected_classes:
-                    # 如果是unknown目录，显示所有检测框
-                    target_class = None
-                else:
-                    # 根据目录名确定目标类别
-                    # 从目录路径中提取类别名（最后一个目录名）
-                    target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
-                
-                # 生成只包含目标类别检测框的可视化图片
-                vis_image = self.detector.visualize_detection(image, results_info, target_class)
+                # 显示所有检测框
+                vis_image = self.detector.visualize_detection(image, results_info, target_class=None)
                 
                 vis_path = vis_dir / filename
                 cv2.imwrite(str(vis_path), vis_image)
-                logger.info(f"已保存可视化结果: {vis_path} (类别: {target_class if target_class else 'unknown'})")
+                logger.info(f"已保存可视化结果: {vis_path} (显示所有检测框)")
             except Exception as e:
                 logger.error(f"保存可视化结果失败: {e}")
+        else:
+            # 原模式：为每个输出目录创建对应的vis目录，每个标签目录下只显示该标签的检测框
+            for i, output_dir in enumerate(output_dirs):
+                # 获取相对于输出根目录的路径
+                try:
+                    relative_to_output = output_dir.relative_to(self.output_path)
+                    vis_dir = self.output_path / "vis" / relative_to_output
+                    vis_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # 确定当前目录对应的标签类别
+                    if not detected_classes:
+                        # 如果是unknown目录，显示所有检测框
+                        target_class = None
+                    else:
+                        # 根据目录名确定目标类别
+                        # 从目录路径中提取类别名（最后一个目录名）
+                        target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
+                    
+                    # 生成只包含目标类别检测框的可视化图片
+                    vis_image = self.detector.visualize_detection(image, results_info, target_class)
+                    
+                    vis_path = vis_dir / filename
+                    cv2.imwrite(str(vis_path), vis_image)
+                    logger.info(f"已保存可视化结果: {vis_path} (类别: {target_class if target_class else 'unknown'})")
+                except Exception as e:
+                    logger.error(f"保存可视化结果失败: {e}")
     
     def save_frame_to_dirs(self, frame: np.ndarray, output_dirs: List[Path], 
                           frame_filename: str, detected_classes: List[str]):
@@ -653,14 +889,26 @@ class FileProcessor:
         relative_path = self.get_relative_path(image_path)
         
         # 创建yolo_dataset目录结构
-        if video_name:
-            # 视频帧的情况
-            yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent / video_name
-            yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent / video_name
+        if self.single_folder:
+            # 单文件夹模式：所有标签和图片都保存在统一位置，不按类别分类
+            if video_name:
+                # 视频帧的情况
+                yolo_images_dir = self.output_path / "yolo_dataset" / "images" / video_name
+                yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / video_name
+            else:
+                # 图片的情况
+                yolo_images_dir = self.output_path / "yolo_dataset" / "images"
+                yolo_labels_dir = self.output_path / "yolo_dataset" / "labels"
         else:
-            # 图片的情况
-            yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent
-            yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent
+            # 原模式：按类别分文件夹
+            if video_name:
+                # 视频帧的情况
+                yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent / video_name
+                yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent / video_name
+            else:
+                # 图片的情况
+                yolo_images_dir = self.output_path / "yolo_dataset" / "images" / relative_path.parent
+                yolo_labels_dir = self.output_path / "yolo_dataset" / "labels" / relative_path.parent
         
         # 创建目录
         yolo_images_dir.mkdir(parents=True, exist_ok=True)
@@ -875,28 +1123,42 @@ class FileProcessor:
                 
                 # 可视化（如果启用）
                 if self.visualize and results_info['detections']:
-                    # 为每个输出目录创建对应的vis目录并保存对应的可视化结果
-                    for i, output_dir in enumerate(output_dirs):
+                    if self.single_folder:
+                        # 单文件夹模式：只保存一个可视化图片，显示所有检测框
                         try:
-                            relative_to_output = output_dir.relative_to(self.output_path)
-                            vis_dir = self.output_path / "vis" / relative_to_output
+                            vis_dir = self.output_path / "vis" / "detected" / relative_path.parent / video_name
                             vis_dir.mkdir(parents=True, exist_ok=True)
                             
-                            # 确定当前目录对应的标签类别
-                            if not detected_classes:
-                                # 如果是unknown目录，显示所有检测框
-                                target_class = None
-                            else:
-                                # 根据目录名确定目标类别
-                                target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
-                            
-                            # 生成只包含目标类别检测框的可视化图片
-                            vis_image = self.detector.visualize_detection(frame, results_info, target_class)
+                            # 显示所有检测框
+                            vis_image = self.detector.visualize_detection(frame, results_info, target_class=None)
                             
                             vis_path = vis_dir / frame_filename
                             cv2.imwrite(str(vis_path), vis_image)
                         except Exception as e:
                             logger.error(f"保存可视化帧失败: {e}")
+                    else:
+                        # 原模式：为每个输出目录创建对应的vis目录并保存对应的可视化结果
+                        for i, output_dir in enumerate(output_dirs):
+                            try:
+                                relative_to_output = output_dir.relative_to(self.output_path)
+                                vis_dir = self.output_path / "vis" / relative_to_output
+                                vis_dir.mkdir(parents=True, exist_ok=True)
+                                
+                                # 确定当前目录对应的标签类别
+                                if not detected_classes:
+                                    # 如果是unknown目录，显示所有检测框
+                                    target_class = None
+                                else:
+                                    # 根据目录名确定目标类别
+                                    target_class = detected_classes[i] if i < len(detected_classes) else detected_classes[0]
+                                
+                                # 生成只包含目标类别检测框的可视化图片
+                                vis_image = self.detector.visualize_detection(frame, results_info, target_class)
+                                
+                                vis_path = vis_dir / frame_filename
+                                cv2.imwrite(str(vis_path), vis_image)
+                            except Exception as e:
+                                logger.error(f"保存可视化帧失败: {e}")
                 
                 # 保存YOLO标签（如果启用）
                 if self.save_labels and results_info['detections']:
@@ -1159,16 +1421,20 @@ def main():
                        help='类别文件路径（classes.txt）')
     parser.add_argument('--confidence', '-conf', type=float, default=0.5,
                        help='置信度阈值（默认: 0.5）')
+    parser.add_argument('--device', '-d', type=str, default='auto',
+                       help='推理设备: auto(自动), cpu, cuda, 0, 1等（默认: auto）')
     parser.add_argument('--visualize', '-v', action='store_true',
                        help='是否保存可视化检测结果')
     parser.add_argument('--max-workers', '-w', type=int, default=4,
                        help='最大并行工作线程数（默认: 4）')
     parser.add_argument('--batch-size', '-b', type=int, default=8,
                        help='图像批处理大小（默认: 8）')
-    parser.add_argument('--debug', '-d', action='store_true',
+    parser.add_argument('--debug', '-dbg', action='store_true',
                        help='启用调试模式，显示被过滤掉的低置信度检测结果')
     parser.add_argument('--save-labels', '-sl', action='store_true',
                        help='是否保存YOLO格式标签')
+    parser.add_argument('--single-folder', '-sf', action='store_true',
+                       help='将所有检测结果保存在单个文件夹中（不按类别分类）')
     
     args = parser.parse_args()
     
@@ -1198,12 +1464,19 @@ def main():
         logger.error("批处理大小必须大于0")
         return
     
+    # 验证设备参数
+    valid_devices = ['auto', 'cpu', 'cuda', '0', '1', '2', '3']
+    if args.device not in valid_devices and not args.device.startswith('cuda:'):
+        logger.error(f"无效的设备参数: {args.device}，有效值: {valid_devices} 或 cuda:N")
+        return
+    
     try:
         # 初始化检测器
         detector = YOLODetectionClassifier(
             model_path=args.model,
             classes_path=args.classes,
-            confidence_threshold=args.confidence
+            confidence_threshold=args.confidence,
+            device=args.device
         )
         
         # 初始化文件处理器
@@ -1214,7 +1487,8 @@ def main():
             visualize=args.visualize,
             max_workers=args.max_workers,
             batch_size=args.batch_size,
-            save_labels=args.save_labels
+            save_labels=args.save_labels,
+            single_folder=args.single_folder
         )
         
         # 处理所有文件
