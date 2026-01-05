@@ -122,24 +122,22 @@ train_labels_path = os.path.join(labels_path, 'train')
 val_labels_path = os.path.join(labels_path, 'val')
 test_labels_path = os.path.join(labels_path, 'test')
 
-# 创建目录结构
-mkdir(train_images_path)
-mkdir(val_images_path)
-mkdir(test_images_path)
-mkdir(train_labels_path)
-mkdir(val_labels_path)
-mkdir(test_labels_path)
-
 # 把图片和标签复制到训练集目录
 if train_name_set:
+    mkdir(train_images_path)
+    mkdir(train_labels_path)
     copy_images_labels(train_name_set, image_folder, label_folder, train_images_path, train_labels_path)
 
 # 把图片和标签复制到测试集目录
 if test_name_set:
+    mkdir(test_images_path)
+    mkdir(test_labels_path)
     copy_images_labels(test_name_set, image_folder, label_folder, test_images_path, test_labels_path)
 
 # 把图片和标签复制到验证集目录
 if val_name_set:
+    mkdir(val_images_path)
+    mkdir(val_labels_path)
     copy_images_labels(val_name_set, image_folder, label_folder, val_images_path, val_labels_path)
 
 print(f'数据集分割完成！输出目录: {newname_str}')
